@@ -4,6 +4,7 @@ from .graph import GraphEngine
 from .importance import ImportanceEngine
 from .memory import MemoryEngine
 from .permission import SYSTEM_PRINCIPAL, PermissionEngine
+from .retrieval import RetrievalEngine, ScoredMemory
 from .version import MemoryVersion, VersionEngine
 
 __all__ = [
@@ -12,6 +13,8 @@ __all__ = [
     "MemoryEngine",
     "MemoryVersion",
     "PermissionEngine",
+    "RetrievalEngine",
+    "ScoredMemory",
     "SYSTEM_PRINCIPAL",
     "VersionEngine",
 ]
