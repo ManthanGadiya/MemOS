@@ -142,6 +142,7 @@ class MemoryObject:
 
     # ---- type metadata ----------------------------------------------------
     type: MemoryType = MemoryType.GENERAL
+    permission: PermissionLevel = PermissionLevel.PRIVATE
     tags: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -177,4 +178,5 @@ class MemoryObject:
         cleaned = dict(data)
         cleaned["type"] = MemoryType(cleaned["type"])
         cleaned["state"] = LifecycleState(cleaned["state"])
+        cleaned["permission"] = PermissionLevel(cleaned["permission"])
         return cls(**cleaned)

@@ -24,7 +24,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from memos.domain.exceptions import StorageError
-from memos.domain.memory import LifecycleState, MemoryObject, MemoryType, now_utc
+from memos.domain.memory import (
+    LifecycleState,
+    MemoryObject,
+    MemoryType,
+    PermissionLevel,
+    now_utc,
+)
 
 
 class Base(DeclarativeBase):
@@ -38,6 +44,7 @@ class MemoryRow(Base):
     owner_id: Mapped[str] = mapped_column(String(64), index=True)
     content: Mapped[str] = mapped_column(Text)
     type: Mapped[str] = mapped_column(String(32), index=True)
+    permission: Mapped[str] = mapped_column(String(32), default="private", index=True)
     state: Mapped[str] = mapped_column(String(32), index=True)
     tags: Mapped[str] = mapped_column(Text, default="[]")
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -81,6 +88,7 @@ class SQLiteMetadataStore:
             owner_id=row.owner_id,
             content=row.content,
             type=MemoryType(row.type),
+            permission=PermissionLevel(row.permission),
             state=LifecycleState(row.state),
             tags=self._deserialize_tags(row.tags),
             metadata=json.loads(row.metadata_json or "{}"),
@@ -101,6 +109,7 @@ class SQLiteMetadataStore:
             owner_id=obj.owner_id,
             content=obj.content,
             type=obj.type.value,
+            permission=obj.permission.value,
             state=obj.state.value,
             tags=self._serialize_tags(obj.tags),
             metadata_json=json.dumps(obj.metadata, default=str),
@@ -136,6 +145,7 @@ class SQLiteMetadataStore:
             new_row = self._object_to_row(obj)
             row.content = new_row.content
             row.type = new_row.type
+            row.permission = new_row.permission
             row.state = new_row.state
             row.tags = new_row.tags
             row.metadata_json = new_row.metadata_json
