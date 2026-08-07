@@ -161,7 +161,11 @@ def test_hybrid_search_includes_metadata_only_candidate_with_zero_similarity(
 def test_hybrid_search_default_state_excludes_archived_and_deleted(
     harness: RetrievalHarness,
 ) -> None:
-    """docs/Algorithms.md 5.2 pins the default lifecycle state to ACTIVE."""
+    """docs/Algorithms.md 5.2 pins the default lifecycle state to ACTIVE.
+
+    Per SRS LC-004, DELETED memories never participate in retrieval, so they
+    are excluded even when ``state=DELETED`` is requested explicitly.
+    """
     active = seed(harness, "stateful data record", state=LifecycleState.ACTIVE)
     seed(harness, "stateful data record", state=LifecycleState.ARCHIVED)
     seed(harness, "stateful data record", state=LifecycleState.DELETED)
@@ -174,8 +178,7 @@ def test_hybrid_search_default_state_excludes_archived_and_deleted(
     assert archived[0].memory.state is LifecycleState.ARCHIVED
 
     deleted = harness.engine.hybrid_search("stateful", state=LifecycleState.DELETED)
-    assert len(deleted) == 1
-    assert deleted[0].memory.state is LifecycleState.DELETED
+    assert deleted == [], "DELETED memories never participate in retrieval (LC-004)"
 
 
 def test_hybrid_search_filters_by_owner(harness: RetrievalHarness) -> None:
@@ -188,12 +191,14 @@ def test_hybrid_search_filters_by_owner(harness: RetrievalHarness) -> None:
 
 
 def test_hybrid_search_filters_by_memory_type(harness: RetrievalHarness) -> None:
-    fact = seed(harness, "daily observation log", type=MemoryType.FACT)
-    seed(harness, "daily observation log", type=MemoryType.EPISODIC)
+    episodic = seed(harness, "daily observation log", type=MemoryType.EPISODIC)
+    seed(harness, "daily observation log", type=MemoryType.WORKING)
 
-    results = harness.engine.hybrid_search("observation", memory_type=MemoryType.FACT)
+    results = harness.engine.hybrid_search(
+        "observation", memory_type=MemoryType.EPISODIC
+    )
 
-    assert result_ids(results) == [fact.memory_id]
+    assert result_ids(results) == [episodic.memory_id]
 
 
 def test_hybrid_search_filters_by_tags(harness: RetrievalHarness) -> None:
@@ -265,6 +270,70 @@ def test_hybrid_search_empty_query_raises_validation_error(
         harness.engine.hybrid_search("   ")
 
 
+def test_hybrid_search_top_k_zero_raises_validation_error(
+    harness: RetrievalHarness,
+) -> None:
+    seed(harness, "quick brown fox jumps over the lazy dog")
+
+    with pytest.raises(ValidationError):
+        harness.engine.hybrid_search("fox", top_k=0)
+
+
+def test_hybrid_search_direct_semantic_candidate_has_unit_graph_connectivity(
+    harness: RetrievalHarness,
+) -> None:
+    """A direct semantic match has graph_distance 0 -> connectivity 1.0 (6.3)."""
+    seed(harness, "quantum entanglement theory")
+
+    results = harness.engine.hybrid_search("quantum entanglement")
+
+    assert results, "expected at least the direct semantic candidate"
+    for item in results:
+        assert item.graph_connectivity == 1.0
+
+
+def test_hybrid_search_graph_expansion_assigns_depth_based_connectivity(
+    harness: RetrievalHarness,
+) -> None:
+    """Graph-expansion neighbors get graph_distance >= 1 (6.3) when enabled."""
+    seed(harness, "quantum entanglement theory", memory_id="a")
+    # No embedding: reachable only via graph expansion out of "a".
+    neighbor = MemoryObject(content="zebra migration patterns", memory_id="b")
+    harness.metadata_store.create(neighbor)
+    harness.graph_engine.add_relationship("a", "b", RelationshipType.RELATED_TO)
+
+    plain = harness.engine.hybrid_search("quantum entanglement")
+    assert "b" not in result_ids(plain), "expansion is opt-in"
+
+    results = harness.engine.hybrid_search(
+        "quantum entanglement", graph_expansion=True
+    )
+    by_id = {item.memory.memory_id: item for item in results}
+
+    assert "a" in by_id, "direct semantic candidate must be present"
+    assert "b" in by_id, "neighbor must be reachable via graph expansion"
+    assert by_id["a"].graph_connectivity == 1.0
+    assert by_id["b"].graph_connectivity == pytest.approx(1.0 / (1.0 + 1))
+
+
+def test_hybrid_search_graph_expansion_is_deterministic(
+    harness: RetrievalHarness,
+) -> None:
+    seed(harness, "quantum entanglement theory", memory_id="a")
+    neighbor = MemoryObject(content="zebra migration patterns", memory_id="b")
+    harness.metadata_store.create(neighbor)
+    harness.graph_engine.add_relationship("a", "b", RelationshipType.RELATED_TO)
+
+    first = result_ids(
+        harness.engine.hybrid_search("quantum entanglement", graph_expansion=True)
+    )
+    second = result_ids(
+        harness.engine.hybrid_search("quantum entanglement", graph_expansion=True)
+    )
+
+    assert first == second
+
+
 # ----------------------------------------------------------------------
 # semantic_search
 # ----------------------------------------------------------------------
@@ -293,6 +362,29 @@ def test_semantic_search_empty_query_raises_validation_error(
         harness.engine.semantic_search("")
 
 
+def test_semantic_search_default_state_excludes_archived_and_deleted(
+    harness: RetrievalHarness,
+) -> None:
+    """semantic_search applies the ACTIVE default (5.2) and LC-004."""
+    active = seed(harness, "stateful data record", state=LifecycleState.ACTIVE)
+    seed(harness, "stateful data record", state=LifecycleState.ARCHIVED)
+    seed(harness, "stateful data record", state=LifecycleState.DELETED)
+
+    default_results = harness.engine.semantic_search("stateful data record")
+    assert result_ids(default_results) == [active.memory_id]
+
+    archived = harness.engine.semantic_search(
+        "stateful data record", state=LifecycleState.ARCHIVED
+    )
+    assert len(archived) == 1
+    assert archived[0].memory.state is LifecycleState.ARCHIVED
+
+    deleted = harness.engine.semantic_search(
+        "stateful data record", state=LifecycleState.DELETED
+    )
+    assert deleted == [], "DELETED memories never participate in retrieval (LC-004)"
+
+
 # ----------------------------------------------------------------------
 # metadata_search
 # ----------------------------------------------------------------------
@@ -313,6 +405,18 @@ def test_metadata_search_empty_query_raises_validation_error(
 ) -> None:
     with pytest.raises(ValidationError):
         harness.engine.metadata_search("")
+
+
+def test_metadata_search_excludes_deleted_memories(
+    harness: RetrievalHarness,
+) -> None:
+    """metadata_search applies the ACTIVE default (5.2) and LC-004."""
+    active = seed(harness, "stateful data record", state=LifecycleState.ACTIVE)
+    seed(harness, "stateful data record", state=LifecycleState.DELETED)
+
+    results = harness.engine.metadata_search("stateful")
+
+    assert result_ids(results) == [active.memory_id]
 
 
 # ----------------------------------------------------------------------
@@ -391,3 +495,20 @@ def test_graph_search_isolated_start_returns_nothing(
     results = harness.engine.graph_search("isolated")
 
     assert results == []
+
+
+def test_graph_search_filters_permission_of_neighbors(
+    harness: RetrievalHarness,
+) -> None:
+    """Non-owners never see PRIVATE neighbors (section 5.7)."""
+    seed(harness, "node a", memory_id="a", owner_id="alice")
+    seed(harness, "node b", memory_id="b", owner_id="alice")
+    seed(harness, "node c", memory_id="c", owner_id="bob")
+    harness.graph_engine.add_relationship("a", "b", RelationshipType.RELATED_TO)
+    harness.graph_engine.add_relationship("a", "c", RelationshipType.RELATED_TO)
+
+    alice_results = harness.engine.graph_search("a", principal_id="alice")
+    assert result_ids(alice_results) == ["b"]
+
+    bob_results = harness.engine.graph_search("a", principal_id="bob")
+    assert result_ids(bob_results) == ["c"]

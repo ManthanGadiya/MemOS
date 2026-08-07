@@ -1,16 +1,19 @@
 """Unit tests for the MemOS Importance Engine.
 
-Covers the five behaviors required by the contract:
+Covers the behaviors required by the contract:
 
 1. ``compute`` returns valid ranges and a fully populated explanation dict.
 2. ``update_memory`` returns a new object and never mutates its input.
-3. Category thresholds map raw scores to ``low`` / ``medium`` / ``high``.
+3. Category bands map raw scores to the documented 5-band scheme
+   (``negligible`` / ``low`` / ``moderate`` / ``high`` / ``critical``) per
+   Algorithms.md §3.2, including the 20/21, 40/41, 60/61, 80/81 boundaries.
 4. Importance is monotonic in the semantic score.
 5. Importance decays with recency.
 
 Plus regression checks for explicit emphasis saturation, absence of a
-``semantic_score`` (derivation from the memory), and the confidence source
-table from ``docs/Algorithms.md`` section 4.3.
+``semantic_score`` (derivation from the memory), the confidence source table
+from ``docs/Algorithms.md`` section 4.3 (fixed values, no blending),
+``MANUAL_ASSIGNMENT`` validation, and NaN-safety of numeric metadata inputs.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from datetime import timedelta
 import pytest
 
 from memos.config.settings import Settings
+from memos.domain.exceptions import ValidationError
 from memos.domain.memory import (
     MemoryObject,
     MemoryType,
@@ -27,12 +31,14 @@ from memos.domain.memory import (
     now_utc,
 )
 from memos.engines.importance import (
-    HIGH_IMPORTANCE_THRESHOLD,
-    LOW_IMPORTANCE_THRESHOLD,
+    HIGH_BAND_UPPER,
+    LOW_BAND_UPPER,
+    MODERATE_BAND_UPPER,
+    NEGLIGIBLE_BAND_UPPER,
     ImportanceEngine,
 )
 
-VALID_CATEGORIES = ("low", "medium", "high")
+VALID_CATEGORIES = ("negligible", "low", "moderate", "high", "critical")
 
 
 # ---------------------------------------------------------------------------
@@ -49,14 +55,14 @@ def build_memory(**overrides: object) -> MemoryObject:
     """Build a MemoryObject with stable, neutral defaults."""
     defaults: dict = {
         "content": "A neutral memory",
-        "type": MemoryType.GENERAL,
+        "type": MemoryType.SEMANTIC,
         "tags": [],
         "metadata": {},
         "access_count": 0,
         "last_accessed_at": None,
         "created_at": now_utc(),
         "importance": 0.5,
-        "importance_category": "medium",
+        "importance_category": "negligible",
         "confidence": 0.5,
     }
     defaults.update(overrides)
@@ -74,7 +80,7 @@ def uniform_semantic(value: float) -> SemanticScore:
 
 
 # ---------------------------------------------------------------------------
-# 1. Default compute returns valid ranges
+# 1. Default compute returns valid ranges & explanation payload
 # ---------------------------------------------------------------------------
 
 
@@ -83,15 +89,26 @@ def test_compute_returns_valid_ranges(engine: ImportanceEngine) -> None:
 
     assert 0.0 <= score.raw_score <= 1.0
     assert 0.0 <= score.importance <= 100.0
+    # Scale reconciliation: importance is the 0..100 score, raw_score its
+    # normalized value in [0, 1] (Algorithms.md AL-003 / §6.1).
+    assert score.raw_score == pytest.approx(score.importance / 100.0)
     assert score.category in VALID_CATEGORIES
     assert 0.0 <= score.confidence <= 1.0
+    # Documentation (§3.6): explanation carries the method id, a timestamp,
+    # every factor, and the resolved confidence source.
+    assert score.components["method"] == "memos.importance.v1"
+    assert isinstance(score.components["last_calculated"], str)
+    assert "last_calculated" in score.components
     assert set(score.components) == {
+        "method",
+        "last_calculated",
         "emphasis",
         "type_weight",
         "relationship_density",
         "retrieval_frequency",
         "age_factor",
         "semantic_score",
+        "confidence_source",
         "confidence",
     }
 
@@ -136,34 +153,82 @@ def test_update_memory_does_not_mutate_input(engine: ImportanceEngine) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Category thresholds
+# 3. Category bands
 # ---------------------------------------------------------------------------
 
 
-def test_explicit_emphasis_saturates_to_high(engine: ImportanceEngine) -> None:
+def test_explicit_emphasis_saturates_to_critical(engine: ImportanceEngine) -> None:
     score = engine.compute(build_memory(metadata={"emphasis": True}))
 
-    assert score.category == "high"
+    assert score.category == "critical"
     assert score.raw_score == 1.0
     assert score.importance == 100.0
 
 
-def test_fresh_general_memory_is_low_category(engine: ImportanceEngine) -> None:
-    score = engine.compute(build_memory(content="quick", type=MemoryType.GENERAL))
+def test_fresh_semantic_memory_is_low_category(engine: ImportanceEngine) -> None:
+    # Doc example (Algorithms.md §3.5): a fresh SEMANTIC memory with no
+    # relationships produces approximately 26 on the 0..100 scale -> low.
+    score = engine.compute(build_memory())
 
     assert score.category == "low"
-    assert score.raw_score < LOW_IMPORTANCE_THRESHOLD
+    assert NEGLIGIBLE_BAND_UPPER < score.raw_score <= LOW_BAND_UPPER
 
 
-def test_boundary_thresholds_are_exclusive(engine: ImportanceEngine) -> None:
-    # ``low`` is strictly below the low threshold; ``high`` strictly above the
-    # high threshold; the middle band is ``medium``.
-    assert engine._categorize(0.0) == "low"
-    assert engine._categorize(LOW_IMPORTANCE_THRESHOLD) == "medium"  # 0.33 inclusive
-    assert engine._categorize(LOW_IMPORTANCE_THRESHOLD + 1e-9) == "medium"
-    assert engine._categorize(HIGH_IMPORTANCE_THRESHOLD) == "medium"  # 0.66 inclusive
-    assert engine._categorize(HIGH_IMPORTANCE_THRESHOLD - 1e-9) == "medium"
-    assert engine._categorize(1.0) == "high"
+def test_fresh_working_memory_is_negligible_category(engine: ImportanceEngine) -> None:
+    score = engine.compute(build_memory(content="quick", type=MemoryType.WORKING))
+
+    assert score.category == "negligible"
+    assert score.raw_score <= NEGLIGIBLE_BAND_UPPER
+
+
+def test_connected_memory_is_moderate_category(engine: ImportanceEngine) -> None:
+    # EPISODIC (T=40 -> 14) + R=8 (24) + recency (~5) + semantics (~1) ~= 44.
+    score = engine.compute(
+        build_memory(type=MemoryType.EPISODIC, metadata={"relationship_count": 8})
+    )
+
+    assert score.category == "moderate"
+    assert LOW_BAND_UPPER < score.raw_score <= MODERATE_BAND_UPPER
+
+
+def test_heavily_connected_frequent_memory_is_high_category(engine: ImportanceEngine) -> None:
+    # Doc example (Algorithms.md §3.5): a heavily connected, frequently
+    # retrieved SEMANTIC memory approaches ~66 on the 0..100 scale -> high.
+    score = engine.compute(
+        build_memory(
+            type=MemoryType.SEMANTIC,
+            metadata={"relationship_count": 10, "retrieval_count": 10},
+        )
+    )
+
+    assert score.category == "high"
+    assert MODERATE_BAND_UPPER < score.raw_score <= HIGH_BAND_UPPER
+
+
+@pytest.mark.parametrize(
+    "raw_score,expected_category",
+    [
+        # 0–20 -> negligible (0.20 inclusive).
+        (0.0, "negligible"),
+        (NEGLIGIBLE_BAND_UPPER, "negligible"),  # 0.20 -> raw = 20/100
+        (0.21, "low"),                          # 21/100 boundary
+        # 21–40 -> low (0.40 inclusive).
+        (LOW_BAND_UPPER, "low"),                # 0.40 -> raw = 40/100
+        (0.41, "moderate"),                     # 41/100 boundary
+        # 41–60 -> moderate (0.60 inclusive).
+        (MODERATE_BAND_UPPER, "moderate"),      # 0.60 -> raw = 60/100
+        (0.61, "high"),                         # 61/100 boundary
+        # 61–80 -> high (0.80 inclusive).
+        (HIGH_BAND_UPPER, "high"),              # 0.80 -> raw = 80/100
+        (0.81, "critical"),                     # 81/100 boundary
+        # 81–100 -> critical.
+        (1.0, "critical"),
+    ],
+)
+def test_category_bands_at_documented_boundaries(
+    engine: ImportanceEngine, raw_score: float, expected_category: str
+) -> None:
+    assert engine._categorize(raw_score) == expected_category
 
 
 # ---------------------------------------------------------------------------
@@ -257,17 +322,40 @@ def test_compute_without_semantic_score_derives_components(
     assert score.raw_score > 0.0
 
 
+# ---------------------------------------------------------------------------
+# Confidence (docs/Algorithms.md section 4.3)
+# ---------------------------------------------------------------------------
+
+
+def test_system_verified_confidence_is_exact_no_blend(engine: ImportanceEngine) -> None:
+    # A stored confidence of 0.0 must NOT dilute the documented baseline:
+    # the source maps directly to its fixed value (no 0.7/0.3 blend).
+    score = engine.compute(
+        build_memory(metadata={"confidence_source": "SYSTEM_VERIFIED"}, confidence=0.0)
+    )
+
+    assert score.confidence == pytest.approx(0.95, abs=1e-12)
+    assert score.components["confidence_source"] == "SYSTEM_VERIFIED"
+
+
 def test_confidence_source_table(engine: ImportanceEngine) -> None:
     verified = engine.compute(
         build_memory(metadata={"confidence_source": "SYSTEM_VERIFIED"}, confidence=0.1)
+    ).confidence
+    repeated = engine.compute(
+        build_memory(metadata={"confidence_source": "REPEATED_OBSERVATION"}, confidence=0.1)
     ).confidence
     inferred = engine.compute(
         build_memory(metadata={"confidence_source": "INFERRED"}, confidence=0.1)
     ).confidence
 
-    # SYSTEM_VERIFIED (0.95) must score far more reliable than INFERRED (0.50).
-    assert verified > inferred
+    # Documented fixed base values (no blending).
+    assert verified == pytest.approx(0.95)
+    assert repeated == pytest.approx(0.80)
+    assert inferred == pytest.approx(0.50)
+    assert verified > repeated > inferred
     assert 0.0 <= verified <= 1.0
+    assert 0.0 <= repeated <= 1.0
     assert 0.0 <= inferred <= 1.0
 
 
@@ -278,5 +366,58 @@ def test_manual_assignment_uses_caller_provided_value(engine: ImportanceEngine) 
         )
     )
 
-    # 0.7 * 0.42 + 0.3 * 0.50 = 0.444
-    assert score.confidence == pytest.approx(0.444, abs=1e-9)
+    # The caller-provided value is used verbatim (clamped to [0, 1]).
+    assert score.confidence == pytest.approx(0.42, abs=1e-12)
+    assert score.components["confidence_source"] == "MANUAL_ASSIGNMENT"
+
+
+def test_manual_assignment_missing_value_raises(engine: ImportanceEngine) -> None:
+    with pytest.raises(ValidationError):
+        engine.compute(build_memory(metadata={"confidence_source": "MANUAL_ASSIGNMENT"}))
+
+
+@pytest.mark.parametrize("bad_value", ["garbage", float("nan"), float("inf"), None])
+def test_manual_assignment_invalid_value_raises(
+    engine: ImportanceEngine, bad_value: object
+) -> None:
+    with pytest.raises(ValidationError):
+        engine.compute(
+            build_memory(
+                metadata={"confidence_source": "MANUAL_ASSIGNMENT", "confidence": bad_value}
+            )
+        )
+
+
+def test_missing_source_falls_back_to_stored_confidence(engine: ImportanceEngine) -> None:
+    score = engine.compute(build_memory(confidence=0.37))
+
+    assert score.confidence == pytest.approx(0.37, abs=1e-12)
+    assert score.components["confidence_source"] == "STORED"
+
+
+# ---------------------------------------------------------------------------
+# NaN / non-finite metadata inputs are sanitized
+# ---------------------------------------------------------------------------
+
+
+def test_nan_and_garbage_metadata_are_sanitized(engine: ImportanceEngine) -> None:
+    score = engine.compute(
+        build_memory(
+            metadata={
+                "relationship_count": float("nan"),
+                "emphasis": float("nan"),
+                "retrieval_count": "garbage",
+                "emotional_intensity": float("inf"),
+            }
+        )
+    )
+
+    # None of the non-finite inputs may poison the formula or raise.
+    assert 0.0 <= score.raw_score <= 1.0
+    assert 0.0 <= score.importance <= 100.0
+    assert score.category in VALID_CATEGORIES
+    assert 0.0 <= score.confidence <= 1.0
+    assert score.components["relationship_density"] == 0.0
+    assert score.components["emphasis"] == 0.0
+    assert score.components["retrieval_frequency"] == 0.0
+    assert score.components["semantic_score"] >= 0.0

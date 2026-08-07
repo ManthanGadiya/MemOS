@@ -49,9 +49,18 @@ mandated by the Importance Engine contract (see
    the 0..100 continuous score so the Retrieval Engine's formula works
    unchanged.
 
-3. **Confidence.** The explicit confidence source from
-   ``metadata['confidence_source']`` (values per §4.3) is blended with a
-   base prior (``BASE_CONFIDENCE_PRIOR``) and clamped to [0, 1].
+3. **Confidence.** The confidence source from
+   ``metadata['confidence_source']`` maps directly to the fixed base value
+   documented in §4.3 — the value is used **verbatim, with no blending
+   against a prior**. ``MANUAL_ASSIGNMENT`` takes the caller-provided
+   ``metadata['confidence']`` value (clamped to [0, 1]) and raises
+   :class:`~memos.domain.exceptions.ValidationError` when that value is
+   missing or invalid. The resolved source label is recorded on the
+   explanation.
+
+Categories follow the documented 5-band scheme (§3.2), and every numeric
+metadata input is sanitized so non-finite values (``NaN``, ``inf``) cannot
+poison the deterministic formula or raise mid-computation.
 
 Determinism: no random numbers, no mutable module state, no dependence on
 storage or on a language model.
@@ -59,11 +68,13 @@ storage or on a language model.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from memos.config.settings import Settings
+from memos.domain.exceptions import ValidationError
 from memos.domain.memory import (
     Confidence,
     ImportanceScore,
@@ -131,28 +142,36 @@ RELEVANCE_SATURATION_TAGS: int = 5
 """Tag count at which the tag component of derived relevance reaches 1.0."""
 
 # ---------------------------------------------------------------------------
-# Categorization thresholds (mapped onto the 0..1 raw score)
+# Category bands (docs/Algorithms.md section 3.2)
 # ---------------------------------------------------------------------------
+#
+# The documented 0..100 scale maps onto the raw score in [0, 1] via
+# ``raw_score = importance / 100`` (see AL-003). Each constant below is the
+# inclusive upper bound of a band on the raw scale:
+#
+#   raw score   | 0..100 scale | category
+#   ------------+--------------+-------------
+#   ≤ 0.20      | 0–20         | negligible
+#   ≤ 0.40      | 21–40        | low
+#   ≤ 0.60      | 41–60        | moderate
+#   ≤ 0.80      | 61–80        | high
+#   > 0.80      | 81–100       | critical
 
-LOW_IMPORTANCE_THRESHOLD: float = 0.33
-"""Raw scores strictly below this are categorized ``low``."""
+NEGLIGIBLE_BAND_UPPER: float = 0.20
+"""Inclusive raw-score upper bound of the ``negligible`` band (0–20)."""
 
-HIGH_IMPORTANCE_THRESHOLD: float = 0.66
-"""Raw scores strictly above this are categorized ``high``."""
+LOW_BAND_UPPER: float = 0.40
+"""Inclusive raw-score upper bound of the ``low`` band (21–40)."""
+
+MODERATE_BAND_UPPER: float = 0.60
+"""Inclusive raw-score upper bound of the ``moderate`` band (41–60)."""
+
+HIGH_BAND_UPPER: float = 0.80
+"""Inclusive raw-score upper bound of the ``high`` band (61–80)."""
 
 # ---------------------------------------------------------------------------
 # Confidence model (docs/Algorithms.md section 4.3)
 # ---------------------------------------------------------------------------
-
-BASE_CONFIDENCE_PRIOR: float = 0.5
-"""Fallback confidence when no explicit source is present (the INFERRED
-base value, and the :class:`MemoryObject` default)."""
-
-CONFIDENCE_SOURCE_WEIGHT: float = 0.7
-"""Weight of the explicit confidence source in the blend."""
-
-CONFIDENCE_PRIOR_WEIGHT: float = 0.3
-"""Weight of the base prior in the blend (sums with the source weight to 1)."""
 
 CONFIDENCE_SOURCE_VALUES: Dict[str, float] = {
     "SYSTEM_VERIFIED": 0.95,
@@ -163,42 +182,43 @@ CONFIDENCE_SOURCE_VALUES: Dict[str, float] = {
 }
 """Fixed confidence base values per Algorithms.md section 4.3.
 
-``MANUAL_ASSIGNMENT`` is intentionally absent: its value is caller-provided
-(``metadata['confidence']``) and is resolved separately.
+Values are used **directly** — there is deliberately no blending with a
+prior. ``MANUAL_ASSIGNMENT`` is intentionally absent: its value is
+caller-provided (``metadata['confidence']``), is clamped to [0, 1], and is
+resolved separately, raising :class:`ValidationError` when missing or
+invalid.
 """
 
+CONFIDENCE_SOURCE_STORED_LABEL: str = "STORED"
+"""Explanation label recorded when the stored confidence value was used
+(i.e. no explicit confidence source resolved to the documented table)."""
+
 # ---------------------------------------------------------------------------
-# Memory-type base weights (docs/Algorithms.md section 3.4, extended)
+# Explanation payload (docs/Algorithms.md section 3.6)
+# ---------------------------------------------------------------------------
+
+EXPLANATION_METHOD: str = "memos.importance.v1"
+"""Explanation ``method`` identifier (Algorithms.md §3.6)."""
+
+# ---------------------------------------------------------------------------
+# Memory-type base weights (docs/Algorithms.md section 3.4)
 # ---------------------------------------------------------------------------
 
 TYPE_BASE_WEIGHTS: Dict[MemoryType, float] = {
-    # Documented weights.
+    # Documented base weights (docs/Algorithms.md section 3.4).
     MemoryType.SEMANTIC: 60.0,
     MemoryType.EPISODIC: 40.0,
-    # Extension for the remaining MemoryType values (assumptions, see report):
-    # - FACT: long-term factual knowledge, semantically equivalent to SEMANTIC.
-    # - PROCEDURAL: durable know-how, slightly below pure semantic facts.
-    # - RELATIONSHIP / PREFERENCE: stable structural signals for future reasoning.
-    # - GENERAL: catch-all scratch memory, mirrors documented WORKING = 20.
-    MemoryType.FACT: 60.0,
-    MemoryType.PROCEDURAL: 50.0,
-    MemoryType.RELATIONSHIP: 45.0,
-    MemoryType.PREFERENCE: 45.0,
-    MemoryType.GENERAL: 20.0,
+    MemoryType.WORKING: 20.0,
 }
 
 DEFAULT_TYPE_WEIGHT: float = 20.0
-"""Type-weight fallback for any future MemoryType value."""
+"""Type-weight fallback for any future MemoryType value (mirrors WORKING)."""
 
 # Type priors used when deriving a relevance component from the memory itself.
 TYPE_RELEVANCE_PRIORS: Dict[MemoryType, float] = {
-    MemoryType.PREFERENCE: 0.9,
-    MemoryType.RELATIONSHIP: 0.8,
     MemoryType.SEMANTIC: 0.7,
-    MemoryType.FACT: 0.7,
-    MemoryType.PROCEDURAL: 0.6,
     MemoryType.EPISODIC: 0.5,
-    MemoryType.GENERAL: 0.4,
+    MemoryType.WORKING: 0.4,
 }
 
 DEFAULT_TYPE_RELEVANCE: float = 0.4
@@ -240,12 +260,29 @@ def _coerce_aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    """Coerce ``value`` to a finite float, else return ``default``.
+
+    Guards the deterministic formula against non-numeric or non-finite
+    metadata values: ``float("nan")`` and ``float("inf")`` would otherwise
+    slip through ``_clamp`` (NaN comparisons are always ``False``) and either
+    poison the score or raise ``ValueError`` mid-computation.
+    """
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(result) or math.isinf(result):
+        return default
+    return result
+
+
 def _read_numeric_metadata(metadata: Dict[str, Any], keys: Sequence[str]) -> Optional[float]:
     """Return the first numeric value found under any of ``keys``.
 
     Accepts numbers, numeric strings, ``{"score": ...}`` dicts, and
     :class:`~memos.domain.memory.Confidence` objects. Returns ``None`` when
-    no key holds a parseable number.
+    no key holds a finite parseable number.
     """
     for key in keys:
         if key not in metadata:
@@ -255,10 +292,9 @@ def _read_numeric_metadata(metadata: Dict[str, Any], keys: Sequence[str]) -> Opt
             return float(value.score)
         if isinstance(value, dict) and "score" in value:
             value = value["score"]
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            continue
+        parsed = _safe_float(value)
+        if parsed is not None:
+            return parsed
     return None
 
 
@@ -277,17 +313,20 @@ def _normalize_confidence_source_key(raw: object) -> str:
 
 def _resolve_explicit_emphasis(memory: MemoryObject) -> float:
     """Return ``E``: ``1.0`` when the owner explicitly marked the memory
-    important, else ``0.0``."""
+    important, else ``0.0``.
+
+    Non-finite or non-numeric emphasis values are treated as absent.
+    """
     for key in EXPLICIT_EMPHASIS_KEYS:
         if key not in memory.metadata:
             continue
         value = memory.metadata[key]
         if isinstance(value, bool):
             return 1.0 if value else 0.0
-        try:
-            return 1.0 if float(value) else 0.0
-        except (TypeError, ValueError):
+        numeric = _safe_float(value)
+        if numeric is None:
             continue
+        return 1.0 if numeric else 0.0
     return 0.0
 
 
@@ -316,7 +355,7 @@ def _resolve_retrieval_frequency(memory: MemoryObject) -> int:
     """
     count = _read_numeric_metadata(memory.metadata, RETRIEVAL_COUNT_KEYS)
     if count is None:
-        count = float(memory.access_count)
+        count = _safe_float(memory.access_count, 0.0)
     return int(_clamp(count, 0.0, float(RETRIEVAL_FREQUENCY_CAP)))
 
 
@@ -346,8 +385,8 @@ def _compute_type_weight(memory: MemoryObject) -> float:
 def _derive_attention(memory: MemoryObject) -> float:
     """Derived attention: normalized content length.
 
-    Longer content indicates a more substantial memory; episodic and
-    procedural memories are naturally longer and thereby score higher.
+    Longer content indicates a more substantial memory; episodic memories
+    are naturally longer and thereby score higher.
     """
     length_factor = len(memory.content) / float(ATTENTION_SATURATION_LENGTH)
     return _clamp(length_factor, 0.0, 1.0)
@@ -359,7 +398,7 @@ def _derive_repetition(memory: MemoryObject) -> float:
     explicit = _read_numeric_metadata(memory.metadata, REPETITION_KEYS)
     if explicit is not None:
         return _clamp(explicit, 0.0, 1.0)
-    access_factor = memory.access_count / float(REPETITION_SATURATION_COUNT)
+    access_factor = _safe_float(memory.access_count, 0.0) / float(REPETITION_SATURATION_COUNT)
     return _clamp(access_factor, 0.0, 1.0)
 
 
@@ -389,42 +428,44 @@ def _derive_emotional_intensity(memory: MemoryObject) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_confidence_source(memory: MemoryObject) -> float:
-    """Return the explicit confidence value (0..1) for ``memory``.
+def _resolve_confidence_source(memory: MemoryObject) -> Tuple[float, str]:
+    """Return ``(confidence, source_label)`` for ``memory``.
+
+    Confidence values follow the fixed table in Algorithms.md §4.3 with **no
+    blending against a prior**: a known source maps directly to its
+    documented base value.
 
     Resolution order:
 
     1. ``metadata['confidence_source']``: a known source maps to its fixed
-       base value; ``MANUAL_ASSIGNMENT`` uses the caller-provided
-       ``metadata['confidence']`` (falling back to the base prior); an
-       unknown label falls back to the stored confidence.
+       base value; ``MANUAL_ASSIGNMENT`` requires a caller-provided
+       ``metadata['confidence']`` (clamped to [0, 1]) and raises
+       :class:`ValidationError` when that value is missing or invalid; an
+       unknown label falls through to the stored confidence.
     2. ``metadata['confidence']`` when present.
     3. The stored :attr:`MemoryObject.confidence` field.
+
+    :raises ValidationError: if ``confidence_source`` is ``MANUAL_ASSIGNMENT``
+        and ``metadata['confidence']`` is absent or not a finite number.
     """
     raw_source = memory.metadata.get("confidence_source")
     if raw_source is not None:
         source_key = _normalize_confidence_source_key(raw_source)
         if source_key == "MANUAL_ASSIGNMENT":
             manual_value = _read_numeric_metadata(memory.metadata, CONFIDENCE_KEYS)
-            if manual_value is not None:
-                return _clamp(manual_value, 0.0, 1.0)
-            return BASE_CONFIDENCE_PRIOR
+            if manual_value is None:
+                raise ValidationError(
+                    "confidence_source 'MANUAL_ASSIGNMENT' requires "
+                    "metadata['confidence'] as a finite number in [0, 1]"
+                )
+            return _clamp(manual_value, 0.0, 1.0), source_key
         if source_key in CONFIDENCE_SOURCE_VALUES:
-            return CONFIDENCE_SOURCE_VALUES[source_key]
+            return CONFIDENCE_SOURCE_VALUES[source_key], source_key
         # Unknown label: fall through to stored confidence.
     stored_value = _read_numeric_metadata(memory.metadata, CONFIDENCE_KEYS)
     if stored_value is not None:
-        return _clamp(stored_value, 0.0, 1.0)
-    return _clamp(memory.confidence, 0.0, 1.0)
-
-
-def _combine_confidence(source_value: float) -> float:
-    """Blend an explicit confidence source with the base prior and clamp."""
-    blended = (
-        CONFIDENCE_SOURCE_WEIGHT * _clamp(source_value, 0.0, 1.0)
-        + CONFIDENCE_PRIOR_WEIGHT * BASE_CONFIDENCE_PRIOR
-    )
-    return _clamp(blended, 0.0, 1.0)
+        return _clamp(stored_value, 0.0, 1.0), CONFIDENCE_SOURCE_STORED_LABEL
+    return _clamp(memory.confidence, 0.0, 1.0), CONFIDENCE_SOURCE_STORED_LABEL
 
 
 class ImportanceEngine:
@@ -454,7 +495,9 @@ class ImportanceEngine:
 
         Combines the documented factors (emphasis, type, relationship
         density, retrieval frequency, age) with the semantic signal and
-        confidence. Always returns a valid :class:`ImportanceScore`.
+        confidence. Always returns a valid :class:`ImportanceScore` whose
+        ``components`` dict carries the documented explanation payload
+        (``method``, ``last_calculated``) plus each contributing factor.
         """
         semantic = (
             semantic_score if semantic_score is not None else self._derive_semantic_score(memory)
@@ -479,15 +522,18 @@ class ImportanceEngine:
         )
         importance = _clamp(document_score, 0.0, IMPORTANCE_SCORE_MAX)
         raw_score = importance / IMPORTANCE_SCORE_MAX
-        confidence = _combine_confidence(_resolve_confidence_source(memory))
+        confidence, confidence_source = _resolve_confidence_source(memory)
 
-        components: Dict[str, float] = {
+        components: Dict[str, Any] = {
+            "method": EXPLANATION_METHOD,
+            "last_calculated": now_utc().isoformat(),
             "emphasis": emphasis,
             "type_weight": type_weight,
             "relationship_density": float(relationship_density),
             "retrieval_frequency": float(retrieval_frequency),
             "age_factor": round(age_factor, 6),
             "semantic_score": round(semantic.combined, 6),
+            "confidence_source": confidence_source,
             "confidence": round(confidence, 6),
         }
 
@@ -508,6 +554,15 @@ class ImportanceEngine:
 
         The input ``memory`` is never mutated; identity, content, lifecycle,
         and version fields are carried over unchanged.
+
+        Recalculation triggers (Algorithms.md §3.7): the caller invokes this
+        method when a memory is created, retrieved (access refreshes
+        ``last_accessed_at`` and feeds the recency factor), updated (new
+        version), or when explicit recalculation is requested. Relationship
+        add/remove events are covered through memory snapshots: this engine
+        reads the relationship count from ``metadata`` (``relationship_count``
+        or a ``relationships`` collection), so a snapshot taken after the
+        graph change yields the updated score.
         """
         score = self.compute(memory, semantic_score)
         return replace(
@@ -532,9 +587,28 @@ class ImportanceEngine:
 
     @staticmethod
     def _categorize(raw_score: float) -> str:
-        """Map a raw score in [0, 1] to ``low`` | ``medium`` | ``high``."""
-        if raw_score < LOW_IMPORTANCE_THRESHOLD:
+        """Map a raw score in [0, 1] to the documented 5-band category.
+
+        Bands follow Algorithms.md §3.2 (0..100 scale; ``raw_score`` is the
+        normalized score in [0, 1]). Each band upper bound is inclusive,
+        matching the documented 0–20, 21–40, 41–60, 61–80, 81–100 ranges.
+
+        ========== ==============
+        raw score  category
+        ========== ==============
+        ≤ 0.20     ``negligible``
+        ≤ 0.40     ``low``
+        ≤ 0.60     ``moderate``
+        ≤ 0.80     ``high``
+        > 0.80     ``critical``
+        ========== ==============
+        """
+        if raw_score <= NEGLIGIBLE_BAND_UPPER:
+            return "negligible"
+        if raw_score <= LOW_BAND_UPPER:
             return "low"
-        if raw_score > HIGH_IMPORTANCE_THRESHOLD:
+        if raw_score <= MODERATE_BAND_UPPER:
+            return "moderate"
+        if raw_score <= HIGH_BAND_UPPER:
             return "high"
-        return "medium"
+        return "critical"

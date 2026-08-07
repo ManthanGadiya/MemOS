@@ -41,8 +41,12 @@ class MemoryRow(Base):
     __tablename__ = "memories"
 
     memory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(64), default="personal", index=True)
     owner_id: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text, default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
     type: Mapped[str] = mapped_column(String(32), index=True)
     permission: Mapped[str] = mapped_column(String(32), default="private", index=True)
     state: Mapped[str] = mapped_column(String(32), index=True)
@@ -85,8 +89,12 @@ class SQLiteMetadataStore:
     def _row_to_object(self, row: MemoryRow) -> MemoryObject:
         return MemoryObject(
             memory_id=row.memory_id,
+            namespace=row.namespace,
             owner_id=row.owner_id,
+            title=row.title,
             content=row.content,
+            source=row.source,
+            summary=row.summary,
             type=MemoryType(row.type),
             permission=PermissionLevel(row.permission),
             state=LifecycleState(row.state),
@@ -106,8 +114,12 @@ class SQLiteMetadataStore:
     def _object_to_row(self, obj: MemoryObject) -> MemoryRow:
         return MemoryRow(
             memory_id=obj.memory_id,
+            namespace=obj.namespace,
             owner_id=obj.owner_id,
+            title=obj.title,
             content=obj.content,
+            source=obj.source,
+            summary=obj.summary,
             type=obj.type.value,
             permission=obj.permission.value,
             state=obj.state.value,
@@ -147,6 +159,10 @@ class SQLiteMetadataStore:
             row.type = new_row.type
             row.permission = new_row.permission
             row.state = new_row.state
+            row.title = new_row.title
+            row.source = new_row.source
+            row.summary = new_row.summary
+            row.namespace = new_row.namespace
             row.tags = new_row.tags
             row.metadata_json = new_row.metadata_json
             row.version = new_row.version

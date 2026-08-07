@@ -29,15 +29,15 @@ class PermissionLevel(str, Enum):
 
 
 class MemoryType(str, Enum):
-    """Semantic classification of memory content."""
+    """Semantic classification of memory content.
 
-    FACT = "fact"
-    EPISODIC = "episodic"
-    PROCEDURAL = "procedural"
+    V1 supports exactly the documented set (SRS §10.6):
+    WORKING, SEMANTIC, EPISODIC.
+    """
+
+    WORKING = "working"
     SEMANTIC = "semantic"
-    RELATIONSHIP = "relationship"
-    PREFERENCE = "preference"
-    GENERAL = "general"
+    EPISODIC = "episodic"
 
 
 class LifecycleState(str, Enum):
@@ -61,16 +61,22 @@ class LifecycleState(str, Enum):
 
 
 class RelationshipType(str, Enum):
-    """Kinds of typed edges in the memory graph."""
+    """Kinds of typed edges in the memory graph.
+
+    V1 supports exactly the documented set (SRS §10.11):
+    RELATED_TO, BELONGS_TO, DEPENDS_ON, PARENT_OF, CHILD_OF,
+    SUPERSEDES, CONTRADICTS, REFERENCES, FOLLOW_UP.
+    """
 
     RELATED_TO = "related_to"
-    CAUSES = "causes"
+    BELONGS_TO = "belongs_to"
     DEPENDS_ON = "depends_on"
-    PART_OF = "part_of"
+    PARENT_OF = "parent_of"
+    CHILD_OF = "child_of"
+    SUPERSEDES = "supersedes"
     CONTRADICTS = "contradicts"
-    REPLACES = "replaces"
     REFERENCES = "references"
-    MENTIONS = "mentions"
+    FOLLOW_UP = "follow_up"
 
 
 @dataclass(frozen=True)
@@ -120,7 +126,10 @@ class ImportanceScore:
     importance: float  # rescaled continuous score
     category: str
     confidence: float
-    components: Dict[str, float] = field(default_factory=dict)
+    # ``components`` carries the documented explanation payload (Algorithms.md
+    # §3.6): numeric factors plus the ``method`` / ``last_calculated`` /
+    # ``confidence_source`` strings, hence ``Any`` values.
+    components: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -135,13 +144,17 @@ class MemoryObject:
 
     # ---- content (metadata core) ---------------------------------------
     content: str
+    title: str = ""
+    source: str = ""
+    summary: str = ""
 
     # ---- identity (immutable) -------------------------------------------
     memory_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    namespace: str = "personal"
     owner_id: str = "default"
 
     # ---- type metadata ----------------------------------------------------
-    type: MemoryType = MemoryType.GENERAL
+    type: MemoryType = MemoryType.SEMANTIC
     permission: PermissionLevel = PermissionLevel.PRIVATE
     tags: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -155,8 +168,8 @@ class MemoryObject:
     access_count: int = 0
 
     # ---- importance & confidence ---------------------------------------
-    importance: float = 0.5
-    importance_category: str = "medium"
+    importance: float = 0.0  # 0-100 scale per Algorithms.md AL-003
+    importance_category: str = "negligible"
     confidence: float = 0.5
 
     # ---- embeddings & graph (populated by storage/engines; not part of identity)

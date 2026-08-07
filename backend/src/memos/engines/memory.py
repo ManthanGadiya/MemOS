@@ -96,17 +96,27 @@ class MemoryEngine:
         self,
         content: str,
         owner_id: str = "default",
-        memory_type: MemoryType = MemoryType.GENERAL,
+        memory_type: MemoryType = MemoryType.SEMANTIC,
+        namespace: str = "personal",
+        title: str = "",
+        source: str = "",
+        summary: str = "",
         tags: list[str] | None = None,
         metadata: Dict[str, Any] | None = None,
-        permission: PermissionLevel = PermissionLevel.PRIVATE,
+        permission: PermissionLevel | None = None,
     ) -> MemoryObject:
         """Create a memory and persist it across all three stores.
 
         Flow: validate content -> build the object (state ACTIVE, version 1)
-        -> compute embedding -> compute importance -> persist metadata ->
+        -> compute embedding -> apply importance -> persist metadata ->
         upsert the vector entry -> cache the graph node -> record the
         ``create`` version.
+
+        Defaults follow the domain contract (docs/SRS.md section 10):
+        ``memory_type`` defaults to :attr:`MemoryType.SEMANTIC`, ``namespace``
+        to ``"personal"``, and ``title``/``source``/``summary`` to empty
+        strings. ``permission``, when omitted, resolves from
+        ``settings.default_permission``.
 
         :raises ValidationError: if ``content`` is empty after ``strip()``.
         """
@@ -116,7 +126,12 @@ class MemoryEngine:
             content=content,
             owner_id=owner_id,
             type=memory_type,
-            permission=permission,
+            namespace=namespace,
+            title=title,
+            source=source,
+            summary=summary,
+            permission=permission
+            or PermissionLevel(self._settings.default_permission),
             tags=self._normalize_tags(tags),
             metadata=self._normalize_metadata(metadata),
             state=LifecycleState.ACTIVE,
@@ -151,6 +166,10 @@ class MemoryEngine:
         touched = self.touch_access(memory)
         refreshed = self.importance_engine.update_memory(touched)
         self.metadata_store.update(refreshed)
+        # Keep the vector payload in sync with the refreshed metadata so
+        # importance/confidence never drift between the two stores
+        # (reviewer F22).
+        self._refresh_vector_payload(refreshed)
         return refreshed
 
     def list_memories(
@@ -188,8 +207,16 @@ class MemoryEngine:
         tags: list[str] | None = None,
         metadata: Dict[str, Any] | None = None,
         memory_type: MemoryType | None = None,
+        namespace: str | None = None,
+        title: str | None = None,
+        source: str | None = None,
+        summary: str | None = None,
     ) -> MemoryObject:
-        """Update content/tags/metadata/type of an ACTIVE memory.
+        """Update content/tags/metadata/type/namespace/title/source/summary
+        of an ACTIVE memory.
+
+        ``memory_id`` is immutable and cannot be changed; ``namespace`` is a
+        logical grouping and may be updated.
 
         Flow: fetch -> ``require_modify`` -> lifecycle check (LC-006: only
         ACTIVE memories receive updates) -> build a new object with the next
@@ -208,7 +235,16 @@ class MemoryEngine:
 
         if content is not None:
             self._validate_content(content)
-        if content is None and tags is None and metadata is None and memory_type is None:
+        if (
+            content is None
+            and tags is None
+            and metadata is None
+            and memory_type is None
+            and namespace is None
+            and title is None
+            and source is None
+            and summary is None
+        ):
             raise ValidationError(
                 f"update for memory {memory_id!r} provides no fields to change"
             )
@@ -218,6 +254,10 @@ class MemoryEngine:
         updated = replace(
             current,
             content=content if content is not None else current.content,
+            namespace=namespace if namespace is not None else current.namespace,
+            title=title if title is not None else current.title,
+            source=source if source is not None else current.source,
+            summary=summary if summary is not None else current.summary,
             tags=(
                 self._normalize_tags(tags)
                 if tags is not None
@@ -345,14 +385,24 @@ class MemoryEngine:
         self.metadata_store.update(touched)
         return touched
 
-    def reindex(self, memory_id: str) -> MemoryObject:
+    def reindex(
+        self, memory_id: str, principal_id: str = SYSTEM_PRINCIPAL
+    ) -> MemoryObject:
         """Recompute the embedding from the current content and re-upsert the
         vector entry (used after importance/version changes).
 
+        Authorization is enforced before any re-indexing (docs/Security.md
+        SP-002: no component may bypass permission validation), mirroring the
+        modify check applied by :meth:`update`.
+
         The recomputed embedding is persisted to the metadata store so the
         stored object and the vector entry never diverge.
+
+        :raises NotFoundError: if the memory does not exist.
+        :raises PermissionDeniedError: if ``principal_id`` cannot modify it.
         """
         memory = self._fetch_or_raise(memory_id)
+        self.permission_engine.require_modify(memory, principal_id)
         reindexed = replace(memory, embedding=self._embed(memory.content))
         self.metadata_store.update(reindexed)
         self._upsert_vector(reindexed)
@@ -457,6 +507,20 @@ class MemoryEngine:
         self.vector_store.upsert(
             memory.memory_id, memory.embedding, self._build_vector_payload(memory)
         )
+
+    def _refresh_vector_payload(self, memory: MemoryObject) -> None:
+        """Re-upsert a memory's filter payload without recomputing the
+        embedding, keeping vector-store importance/confidence aligned with the
+        metadata store (reviewer F22).
+
+        No-op when the memory has no embedding (nothing to index).
+        """
+        if memory.embedding is not None:
+            self.vector_store.upsert(
+                memory.memory_id,
+                memory.embedding,
+                self._build_vector_payload(memory),
+            )
 
     def _cache_graph_node(self, memory: MemoryObject) -> None:
         """Refresh the cached graph node when the adapter supports it.

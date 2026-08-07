@@ -111,6 +111,58 @@ class TestCreate:
         created = make_memory(engine, content="unique content phrase")
         assert created.embedding == engine.embedder.embed("unique content phrase")
 
+    def test_create_defaults_to_semantic(self, engine: MemoryEngine) -> None:
+        created = make_memory(engine, content="default type")
+        assert created.type is MemoryType.SEMANTIC
+
+    def test_create_accepts_namespace_title_source_summary_round_trips(
+        self, engine: MemoryEngine
+    ) -> None:
+        created = make_memory(
+            engine,
+            content="round trip",
+            namespace="research",
+            title="A Title",
+            source="test-suite",
+            summary="A short summary",
+        )
+
+        assert created.namespace == "research"
+        assert created.title == "A Title"
+        assert created.source == "test-suite"
+        assert created.summary == "A short summary"
+
+        persisted = engine.metadata_store.get(created.memory_id)
+        assert persisted.namespace == "research"
+        assert persisted.title == "A Title"
+        assert persisted.source == "test-suite"
+        assert persisted.summary == "A short summary"
+
+    def test_create_default_namespace_title_source_summary(
+        self, engine: MemoryEngine
+    ) -> None:
+        created = make_memory(engine, content="default metadata fields")
+        assert created.namespace == "personal"
+        assert created.title == ""
+        assert created.source == ""
+        assert created.summary == ""
+
+    def test_create_with_none_permission_uses_settings_default(
+        self, engine: MemoryEngine
+    ) -> None:
+        created = make_memory(engine, content="default permission", permission=None)
+        assert created.permission is PermissionLevel(engine._settings.default_permission)
+
+    def test_create_with_explicit_permission_is_respected(
+        self, engine: MemoryEngine
+    ) -> None:
+        created = make_memory(
+            engine,
+            content="explicit permission",
+            permission=PermissionLevel.SYSTEM,
+        )
+        assert created.permission is PermissionLevel.SYSTEM
+
     def test_create_rejects_empty_content(self, engine: MemoryEngine) -> None:
         for blank in ("", "   ", "\n\t"):
             with pytest.raises(ValidationError):
@@ -123,7 +175,7 @@ class TestCreate:
             engine,
             owner_id="alice",
             content="payload check",
-            memory_type=MemoryType.FACT,
+            memory_type=MemoryType.SEMANTIC,
             tags=["x", "y"],
         )
         payload = engine.vector_store._payloads[created.memory_id]  # type: ignore[attr-defined]
@@ -137,7 +189,7 @@ class TestCreate:
             "tags",
         }
         assert payload["memory_id"] == created.memory_id
-        assert payload["type"] == "fact"
+        assert payload["type"] == "semantic"
         assert payload["owner_id"] == "alice"
         assert payload["state"] == "active"
         assert payload["importance"] == created.importance
@@ -186,6 +238,22 @@ class TestGet:
         )
         assert fetched.importance == pytest.approx(expected.importance, abs=1e-4)
         assert fetched.importance_category == expected.importance_category
+
+    def test_get_refreshes_vector_payload_importance(self, engine: MemoryEngine) -> None:
+        created = make_memory(engine, content="payload refresh check")
+        payload_before = engine.vector_store._payloads[created.memory_id]  # type: ignore[attr-defined]
+
+        fetched = engine.get(created.memory_id)
+
+        # The refreshed importance (recomputed after access_count=1) is
+        # persisted to metadata AND mirrored into the vector payload so the
+        # two stores never drift (reviewer F22).
+        payload_after = engine.vector_store._payloads[created.memory_id]  # type: ignore[attr-defined]
+        assert payload_after["importance"] == fetched.importance
+        assert payload_after["confidence"] == fetched.confidence
+        assert engine.metadata_store.get(created.memory_id).importance == fetched.importance
+        # Access/recency changed the recomputed importance vs. creation time.
+        assert payload_after["importance"] != payload_before["importance"]
 
 
 # ----------------------------------------------------------------------
@@ -422,40 +490,44 @@ class TestList:
     def test_list_filters_by_owner_type_state_and_tags(
         self, engine: MemoryEngine
     ) -> None:
-        alice_fact = make_memory(
+        alice_semantic = make_memory(
             engine,
             owner_id="alice",
-            content="alice fact",
-            memory_type=MemoryType.FACT,
+            content="alice semantic",
+            memory_type=MemoryType.SEMANTIC,
             tags=["work"],
         )
-        alice_pref = make_memory(
+        alice_episodic = make_memory(
             engine,
             owner_id="alice",
-            content="alice pref",
-            memory_type=MemoryType.PREFERENCE,
+            content="alice episodic",
+            memory_type=MemoryType.EPISODIC,
             tags=["personal"],
         )
-        bob_fact = make_memory(
+        bob_semantic = make_memory(
             engine,
             owner_id="bob",
-            content="bob fact",
-            memory_type=MemoryType.FACT,
+            content="bob semantic",
+            memory_type=MemoryType.SEMANTIC,
             tags=["work"],
         )
 
         assert {
             m.memory_id for m in engine.list_memories(owner_id="alice")
-        } == {alice_fact.memory_id, alice_pref.memory_id}
+        } == {alice_semantic.memory_id, alice_episodic.memory_id}
         assert {
-            m.memory_id for m in engine.list_memories(memory_type=MemoryType.FACT)
-        } == {alice_fact.memory_id, bob_fact.memory_id}
+            m.memory_id for m in engine.list_memories(memory_type=MemoryType.SEMANTIC)
+        } == {alice_semantic.memory_id, bob_semantic.memory_id}
         assert {
             m.memory_id for m in engine.list_memories(state=LifecycleState.ACTIVE)
-        } == {alice_fact.memory_id, alice_pref.memory_id, bob_fact.memory_id}
+        } == {
+            alice_semantic.memory_id,
+            alice_episodic.memory_id,
+            bob_semantic.memory_id,
+        }
         assert {
             m.memory_id for m in engine.list_memories(tags=["work"])
-        } == {alice_fact.memory_id, bob_fact.memory_id}
+        } == {alice_semantic.memory_id, bob_semantic.memory_id}
 
     def test_list_respects_limit_and_offset(self, engine: MemoryEngine) -> None:
         for index in range(5):
@@ -511,6 +583,23 @@ class TestTouchAndReindex:
         assert reindexed.embedding == engine.embedder.embed("original")
         assert vector_contains(engine, "original", created.memory_id)
         assert engine.metadata_store.get(created.memory_id).embedding == reindexed.embedding
+
+    def test_reindex_by_non_owner_raises_permission_denied(
+        self, engine: MemoryEngine
+    ) -> None:
+        created = make_memory(
+            engine,
+            owner_id="alice",
+            content="private reindex target",
+            permission=PermissionLevel.PRIVATE,
+        )
+
+        with pytest.raises(PermissionDeniedError):
+            engine.reindex(created.memory_id, principal_id="bob")
+
+        # The owner and the system principal may reindex.
+        engine.reindex(created.memory_id, principal_id="alice")
+        engine.reindex(created.memory_id, principal_id=SYSTEM_PRINCIPAL)
 
     def test_reindex_missing_memory_raises_not_found(
         self, engine: MemoryEngine

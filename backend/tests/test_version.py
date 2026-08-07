@@ -304,7 +304,7 @@ class TestDiff:
         }
 
     def test_diff_reports_enum_fields_by_value(self, engine: VersionEngine) -> None:
-        previous = make_memory(content="x")
+        previous = make_memory(content="x", type=MemoryType.WORKING)
         current = make_memory(
             content="x",
             memory_id=previous.memory_id,
@@ -316,7 +316,7 @@ class TestDiff:
         snapshot = engine.record(current, change_type="archive", previous=previous)
 
         assert snapshot.diff["state"] == ["active", "archived"]
-        assert snapshot.diff["type"] == ["general", "semantic"]
+        assert snapshot.diff["type"] == ["working", "semantic"]
 
 
 # ----------------------------------------------------------------------

@@ -68,7 +68,7 @@ def test_add_relationship_returns_persisted_relationship(
     relationship = engine.add_relationship(
         "source-1",
         "target-1",
-        RelationshipType.CAUSES,
+        RelationshipType.FOLLOW_UP,
         weight=0.8,
         metadata={"provenance": "test"},
     )
@@ -76,7 +76,7 @@ def test_add_relationship_returns_persisted_relationship(
     assert isinstance(relationship, Relationship)
     assert relationship.source_id == "source-1"
     assert relationship.target_id == "target-1"
-    assert relationship.type == RelationshipType.CAUSES
+    assert relationship.type == RelationshipType.FOLLOW_UP
     assert relationship.weight == 0.8
     assert relationship.metadata == {"provenance": "test"}
     assert relationship.relationship_id
@@ -86,10 +86,12 @@ def test_add_relationship_returns_persisted_relationship(
     assert persisted[0].relationship_id == relationship.relationship_id
 
 
-def test_get_relationships_by_memory_and_direction(engine: GraphEngine) -> None:
+def test_get_relationships_by_memory_and_direction(
+    engine: GraphEngine,
+) -> None:
     engine.add_relationship("x", "y", RelationshipType.RELATED_TO)
     engine.add_relationship("y", "x", RelationshipType.REFERENCES)
-    engine.add_relationship("y", "z", RelationshipType.CAUSES)
+    engine.add_relationship("y", "z", RelationshipType.FOLLOW_UP)
 
     outgoing = engine.get_relationships(memory_id="y", direction="out")
     assert_ids(outgoing, ["y->x", "y->z"])
@@ -102,12 +104,12 @@ def test_get_relationships_by_memory_and_direction(engine: GraphEngine) -> None:
 
 
 def test_get_relationships_by_type(engine: GraphEngine) -> None:
-    engine.add_relationship("x", "y", RelationshipType.CAUSES)
+    engine.add_relationship("x", "y", RelationshipType.FOLLOW_UP)
     engine.add_relationship("x", "z", RelationshipType.REFERENCES)
 
-    causes = engine.get_relationships(relationship_type="causes")
-    assert len(causes) == 1
-    assert causes[0].target_id == "y"
+    follow_ups = engine.get_relationships(relationship_type="follow_up")
+    assert len(follow_ups) == 1
+    assert follow_ups[0].target_id == "y"
 
 
 # ---- remove ----------------------------------------------------------------
@@ -142,19 +144,30 @@ def test_traverse_respects_depth_limit(chain_engine: GraphEngine) -> None:
         f"{r.source_id}->{r.target_id}": depth for r, depth in edges
     }
     assert depths["a->b"] == 1
-    assert depths["a->a"] == 1  # self-loop is an out-edge at depth 1
     assert depths["b->c"] == 2
+    # The CONTRADICTS self-loop a->a is not traversable by default.
+    assert "a->a" not in depths
     assert "c->d" not in depths  # depth 3 exceeds the limit
 
 
 def test_traverse_cycle_safety(chain_engine: GraphEngine) -> None:
     edges = chain_engine.traverse("a", max_depth=10)
 
-    # The self-loop a->a appears exactly once; the chain is visited once.
+    # Default traversal excludes CONTRADICTS, so the self-loop is absent and
+    # the chain is visited exactly once without revisits or a hang.
+    self_loops = [r for r, _ in edges if r.source_id == "a" and r.target_id == "a"]
+    assert len(self_loops) == 0
+    assert len(edges) == 3  # a->b, b->c, c->d
+    assert all(depth <= 10 for _, depth in edges)
+
+
+def test_traverse_explicit_contradicts_included(chain_engine: GraphEngine) -> None:
+    # When CONTRADICTS is explicitly requested it is traversed.
+    edges = chain_engine.traverse(
+        "a", max_depth=1, relationship_types=["contradicts"]
+    )
     self_loops = [r for r, _ in edges if r.source_id == "a" and r.target_id == "a"]
     assert len(self_loops) == 1
-    assert len(edges) == 4  # a->b, a->a, b->c, c->d — no revisits, no hang
-    assert all(depth <= 10 for _, depth in edges)
 
 
 def test_traverse_type_filter(chain_engine: GraphEngine) -> None:
@@ -181,6 +194,44 @@ def test_traverse_type_filter_blocks_unreachable_nodes(
         "a", max_depth=3, relationship_types=["depends_on"]
     )
     assert edges == []
+
+
+def test_traverse_default_excludes_contradicts(engine: GraphEngine) -> None:
+    engine.add_relationship("n", "p", RelationshipType.RELATED_TO)
+    engine.add_relationship("n", "q", RelationshipType.CONTRADICTS)
+
+    default_edges = engine.traverse("n", max_depth=1)
+    assert len(default_edges) == 1
+    assert default_edges[0][0].target_id == "p"
+
+    explicit_edges = engine.traverse(
+        "n", max_depth=1, relationship_types=["contradicts"]
+    )
+    assert len(explicit_edges) == 1
+    assert explicit_edges[0][0].target_id == "q"
+
+
+def test_traverse_graph_min_weight(engine: GraphEngine) -> None:
+    engine.add_relationship("n", "p", RelationshipType.RELATED_TO, weight=0.8)
+    engine.add_relationship("n", "q", RelationshipType.RELATED_TO, weight=0.3)
+
+    filtered = engine.traverse("n", max_depth=1, graph_min_weight=0.5)
+    assert len(filtered) == 1
+    assert filtered[0][0].target_id == "p"
+
+
+def test_traverse_max_nodes_cap(engine: GraphEngine) -> None:
+    engine.add_relationship("a", "b", RelationshipType.RELATED_TO)
+    engine.add_relationship("b", "c", RelationshipType.RELATED_TO)
+    engine.add_relationship("c", "d", RelationshipType.RELATED_TO)
+
+    edges = engine.traverse("a", max_depth=10, max_nodes=2)
+
+    sources = {r.source_id for r, _ in edges}
+    # Expansion is capped at 2 nodes (a and b), so "c" is never expanded.
+    assert "c" not in sources
+    assert "c->d" not in [f"{r.source_id}->{r.target_id}" for r, _ in edges]
+    assert "b->c" in [f"{r.source_id}->{r.target_id}" for r, _ in edges]
 
 
 # ---- neighbors ---------------------------------------------------------------
@@ -237,13 +288,20 @@ def test_shortest_path_not_found(chain_engine: GraphEngine) -> None:
         chain_engine.shortest_path("d", "a")
 
 
-# ---- validation ---------------------------------------------------------------
+# ---- weight bounds ------------------------------------------------------------
 
 
 def test_negative_weight_raises_validation_error(engine: GraphEngine) -> None:
     with pytest.raises(ValidationError):
         engine.add_relationship(
             "x", "y", RelationshipType.RELATED_TO, weight=-0.1
+        )
+
+
+def test_weight_above_one_raises_validation_error(engine: GraphEngine) -> None:
+    with pytest.raises(ValidationError):
+        engine.add_relationship(
+            "x", "y", RelationshipType.RELATED_TO, weight=1.5
         )
 
 
@@ -254,6 +312,13 @@ def test_zero_weight_is_accepted(engine: GraphEngine) -> None:
     assert relationship.weight == 0.0
 
 
+def test_unit_weight_is_accepted(engine: GraphEngine) -> None:
+    relationship = engine.add_relationship(
+        "x", "y", RelationshipType.REFERENCES, weight=1.0
+    )
+    assert relationship.weight == 1.0
+
+
 def test_missing_relationship_type_raises_validation_error(
     engine: GraphEngine,
 ) -> None:
@@ -261,9 +326,87 @@ def test_missing_relationship_type_raises_validation_error(
         engine.add_relationship("x", "y", None)
 
 
-def test_self_loop_is_allowed(engine: GraphEngine) -> None:
+# ---- cycle prevention -----------------------------------------------------------
+
+
+def test_parent_of_self_loop_rejected(engine: GraphEngine) -> None:
+    with pytest.raises(ValidationError):
+        engine.add_relationship("p", "p", RelationshipType.PARENT_OF)
+
+
+def test_child_of_self_loop_rejected(engine: GraphEngine) -> None:
+    with pytest.raises(ValidationError):
+        engine.add_relationship("c", "c", RelationshipType.CHILD_OF)
+
+
+def test_parent_of_cycle_rejected(engine: GraphEngine) -> None:
+    engine.add_relationship("a", "b", RelationshipType.PARENT_OF)
+    # Adding b -> a would close the cycle a -> b -> a and must be rejected.
+    with pytest.raises(ValidationError):
+        engine.add_relationship("b", "a", RelationshipType.PARENT_OF)
+
+
+def test_child_of_cycle_rejected(engine: GraphEngine) -> None:
+    engine.add_relationship("a", "b", RelationshipType.CHILD_OF)
+    with pytest.raises(ValidationError):
+        engine.add_relationship("b", "a", RelationshipType.CHILD_OF)
+
+
+def test_related_to_cycle_allowed(engine: GraphEngine) -> None:
+    first = engine.add_relationship("x", "y", RelationshipType.RELATED_TO)
+    second = engine.add_relationship("y", "x", RelationshipType.RELATED_TO)
+    assert first.source_id == "x" and first.target_id == "y"
+    assert second.source_id == "y" and second.target_id == "x"
+
+
+def test_self_loop_is_allowed_for_cycle_permitting_type(
+    engine: GraphEngine,
+) -> None:
     relationship = engine.add_relationship(
         "x", "x", RelationshipType.CONTRADICTS
     )
     assert relationship.source_id == "x"
     assert relationship.target_id == "x"
+
+
+# ---- node lifecycle validation --------------------------------------------------
+
+
+def test_node_validator_rejects_missing_memory(
+    engine: GraphEngine, graph_store: InMemoryGraphStore
+) -> None:
+    active_ids = {"existing-node"}
+    validating_engine = GraphEngine(
+        graph_store, node_validator=lambda mid: mid in active_ids
+    )
+
+    # Both endpoints must exist; a missing endpoint is rejected.
+    with pytest.raises(ValidationError):
+        validating_engine.add_relationship(
+            "existing-node", "missing-node", RelationshipType.RELATED_TO
+        )
+    with pytest.raises(ValidationError):
+        validating_engine.add_relationship(
+            "missing-node", "existing-node", RelationshipType.RELATED_TO
+        )
+
+
+def test_node_validator_accepts_active_memory(
+    engine: GraphEngine, graph_store: InMemoryGraphStore
+) -> None:
+    active_ids = {"existing-node"}
+    validating_engine = GraphEngine(
+        graph_store, node_validator=lambda mid: mid in active_ids
+    )
+    relationship = validating_engine.add_relationship(
+        "existing-node", "existing-node", RelationshipType.REFERENCES
+    )
+    assert relationship.source_id == "existing-node"
+
+
+def test_no_node_validator_skips_check(engine: GraphEngine) -> None:
+    # Without an injected validator, arbitrary IDs are accepted (dev/standalone).
+    relationship = engine.add_relationship(
+        "unknown-source", "unknown-target", RelationshipType.RELATED_TO
+    )
+    assert relationship.source_id == "unknown-source"
