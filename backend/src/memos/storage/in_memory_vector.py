@@ -45,6 +45,19 @@ class InMemoryVectorStore:
             self._vectors.pop(memory_id, None)
             self._payloads.pop(memory_id, None)
 
+    def get(self, memory_id: str) -> Optional[Tuple[List[float], Dict[str, Any]]]:
+        """Return ``(vector, payload)`` for ``memory_id`` or ``None``.
+
+        Kernel-transaction before-image primitive: lets the transaction
+        capture a vector entry before a write and restore it on rollback.
+        """
+        with self._lock:
+            vector = self._vectors.get(memory_id)
+            payload = self._payloads.get(memory_id)
+            if vector is None:
+                return None
+            return list(vector), payload
+
     def search(
         self,
         vector: List[float],

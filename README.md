@@ -371,11 +371,11 @@ In Progress
 - ⏳ Algorithms
 - ⏳ Dashboard
 - ⏳ Research
+- ⏳ Backend Development
+- ⏳ Memory Kernel
 
 Upcoming
 
-- Backend Development
-- Memory Kernel
 - REST API
 - MCP Server
 - Dashboard

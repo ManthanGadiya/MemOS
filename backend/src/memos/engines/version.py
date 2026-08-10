@@ -204,6 +204,24 @@ class VersionEngine:
         """Drop every recorded version chain."""
         self._registry.clear()
 
+    def truncate_to(self, memory_id: str, height: int) -> None:
+        """Trim the version chain for ``memory_id`` back to ``height`` entries.
+
+        This is a kernel-only rollback primitive: a transaction captures the
+        chain height before an operation and calls ``truncate_to`` on rollback
+        so a failed write leaves no version snapshot behind. A height of
+        ``0`` drops the entire chain (it is also a no-op when no chain
+        exists). Height is clamped to ``>= 0``; values beyond the current
+        chain length leave the chain unchanged, keeping the helper idempotent.
+        """
+        if height <= 0:
+            self._registry.pop(memory_id, None)
+            return
+        chain = self._registry.get(memory_id)
+        if chain is None or len(chain) <= height:
+            return
+        del chain[height:]
+
     # ------------------------------------------------------------------
     # Validation helpers
     # ------------------------------------------------------------------

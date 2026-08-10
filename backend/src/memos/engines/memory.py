@@ -104,6 +104,7 @@ class MemoryEngine:
         tags: list[str] | None = None,
         metadata: Dict[str, Any] | None = None,
         permission: PermissionLevel | None = None,
+        memory_id: str | None = None,
     ) -> MemoryObject:
         """Create a memory and persist it across all three stores.
 
@@ -113,10 +114,16 @@ class MemoryEngine:
         ``create`` version.
 
         Defaults follow the domain contract (docs/SRS.md section 10):
-        ``memory_type`` defaults to :attr:`MemoryType.SEMANTIC`, ``namespace``
+        ``memory_type`` defaults to :attr:`MemoryType.SEMANTIC``, ``namespace``
         to ``"personal"``, and ``title``/``source``/``summary`` to empty
         strings. ``permission``, when omitted, resolves from
         ``settings.default_permission``.
+
+        ``memory_id`` is optional: when the Memory Kernel supplies one, the
+        identifier is assigned before the call so the kernel can snapshot
+        before-images and roll back a partially-created memory; when omitted,
+        an identifier is generated inside the object factory (the normal
+        behavior for callers that do not pre-allocate identity).
 
         :raises ValidationError: if ``content`` is empty after ``strip()``.
         """
@@ -137,6 +144,10 @@ class MemoryEngine:
             state=LifecycleState.ACTIVE,
             version=1,
         )
+        if memory_id is not None:
+            # The Memory Kernel pre-allocated identity (so it can snapshot
+            # before-images); otherwise the object factory generated one.
+            memory = replace(memory, memory_id=memory_id)
         memory.embedding = self._embed(memory.content)
         memory = self.importance_engine.update_memory(memory)
 

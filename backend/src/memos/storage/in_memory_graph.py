@@ -28,6 +28,15 @@ class InMemoryGraphStore:
         with self._lock:
             self._nodes[memory.memory_id] = memory
 
+    def get_node(self, memory_id: str) -> Optional[MemoryObject]:
+        """Return the cached node for ``memory_id`` or ``None``.
+
+        Kernel-transaction before-image primitive: lets the transaction
+        capture the graph node before a write and restore it on rollback.
+        """
+        with self._lock:
+            return self._nodes.get(memory_id)
+
     # ---- GraphStore protocol ----------------------------------------------
 
     def upsert_relationship(self, rel: Relationship) -> None:
