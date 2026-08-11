@@ -42,7 +42,7 @@ from memos.engines.importance import ImportanceEngine
 from memos.engines.memory import MemoryEngine
 from memos.engines.permission import SYSTEM_PRINCIPAL, PermissionEngine
 from memos.engines.retrieval import RetrievalEngine, ScoredMemory
-from memos.engines.version import VersionEngine
+from memos.engines.version import MemoryVersion, VersionEngine
 from memos.kernel.audit import AuditRecord, AuditResult, AuditStore
 from memos.kernel.errors import KernelError, KernelErrorCode, to_kernel_error
 from memos.kernel.events import EventBus, KernelEvent, event_kind
@@ -285,6 +285,27 @@ class MemoryKernel:
                 AuditResult.DENIED,
             )
             raise to_kernel_error(error, request_id=request_id) from error
+
+    def _require_read_access(
+        self,
+        memory_id: str,
+        principal_id: str,
+        request_id: str,
+    ) -> None:
+        """Fetch the target and authorize read access.
+
+        Used by read-only version endpoints so a caller who may not read a
+        memory cannot read its history. Permission failures are audited as
+        ``DENIED`` by :meth:`_read`.
+        """
+        memory = self._metadata_store.get(memory_id)
+        if memory is None:
+            raise KernelError(
+                KernelErrorCode.INVALID_REQUEST,
+                f"memory {memory_id!r} not found",
+                {"request_id": request_id},
+            )
+        self._permission_engine.require_access(memory, principal_id)
 
     # ==================================================================
     # Create
@@ -649,6 +670,98 @@ class MemoryKernel:
             relationship_type=relationship_type,
             direction=direction,
         )
+
+    # ==================================================================
+    # Versions
+    # ==================================================================
+    @_structured_errors
+    def list_versions(
+        self,
+        memory_id: str,
+        principal_id: str = SYSTEM_PRINCIPAL,
+        request_id: Optional[str] = None,
+    ) -> List[MemoryVersion]:
+        """Return the full version history for ``memory_id`` (oldest first).
+
+        Access is governed by a READ permission check on the current object:
+        a caller who may not read the memory may not read its history.
+        """
+        request_id = request_id or self._new_request_id()
+        self._validator.validate_principal(principal_id)
+        memory_id = self._validator.validate_memory_id(memory_id)
+
+        def read_versions() -> List[MemoryVersion]:
+            self._require_read_access(memory_id, principal_id, request_id)
+            return self._version_engine.list_versions(memory_id)
+
+        return self._read(
+            KernelOperation.READ,
+            request_id,
+            principal_id,
+            memory_id,
+            read_versions,
+        )
+
+    @_structured_errors
+    def get_version(
+        self,
+        memory_id: str,
+        version: int,
+        principal_id: str = SYSTEM_PRINCIPAL,
+        request_id: Optional[str] = None,
+    ) -> MemoryVersion:
+        """Return the snapshot for ``memory_id`` at ``version``.
+
+        Access is governed by a READ permission check on the current object,
+        matching :meth:`list_versions`.
+        """
+        request_id = request_id or self._new_request_id()
+        self._validator.validate_principal(principal_id)
+        memory_id = self._validator.validate_memory_id(memory_id)
+
+        def read_version() -> MemoryVersion:
+            self._require_read_access(memory_id, principal_id, request_id)
+            return self._version_engine.get_version(memory_id, version)
+
+        return self._read(
+            KernelOperation.READ,
+            request_id,
+            principal_id,
+            memory_id,
+            read_version,
+        )
+
+    # ==================================================================
+    # System introspection (read-only, no per-principal data)
+    # ==================================================================
+    @property
+    def settings(self) -> Settings:
+        """Return the runtime configuration (read-only accessor)."""
+        return self._settings
+
+    def statistics(self) -> Dict[str, Any]:
+        """Return aggregate counts useful for a dashboard.
+
+        Only store-level aggregates are exposed; no memory content or
+        per-principal data leaves the kernel.
+        """
+        return {
+            "memory_count": self._metadata_store.count(),
+            "relationship_count": len(self._graph_store.get_relationships(
+                memory_id=None, relationship_type=None, direction="any"
+            )),
+            "audit_count": self._audit_store.count(),
+        }
+
+    def health(self) -> Dict[str, str]:
+        """Return machine-readable liveness of the kernel and its stores."""
+        statuses: Dict[str, str] = {"kernel": "ok"}
+        try:
+            self._metadata_store.count()
+            statuses["metadata_store"] = "ok"
+        except Exception:  # noqa: BLE001 - liveness probe must not raise
+            statuses["metadata_store"] = "unavailable"
+        return statuses
 
     # ==================================================================
     # Lifecycle / audit utilities
