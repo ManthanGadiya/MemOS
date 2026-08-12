@@ -423,20 +423,23 @@ Completed
 - ✅ Benchmark Specification
 - ✅ Roadmap
 
+Completed
+
+- ✅ Algorithms
+- ✅ Research
+- ✅ Backend Development
+- ✅ Memory Kernel
+
 In Progress
 
-- ⏳ Algorithms
-- ⏳ Research
-- ⏳ Backend Development
-- ⏳ Memory Kernel
+- Testing
+- Docker Deployment
 
 Upcoming
 
 - ✅ REST API
 - ✅ MCP Server
 - ✅ Dashboard
-- ⏳ Testing
-- ⏳ Docker Deployment
 
 ---
 

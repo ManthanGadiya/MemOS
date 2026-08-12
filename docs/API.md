@@ -102,6 +102,25 @@ Supports filtering by
 - lifecycle
 - tags
 ---
+## Archive Memory
+```
+PUT /memories/{memory_id}/archive
+```
+Moves the Memory Object to `ARCHIVED` (excluded from default retrieval).
+---
+## Restore Memory
+```
+PUT /memories/{memory_id}/restore
+```
+Restores the Memory Object to `ACTIVE`.
+---
+## Adjust Confidence
+```
+POST /memories/{memory_id}/confidence?adjustment=repeated_observation|contradiction
+```
+Applies the Algorithms.md §4.4 confidence adjustment
+(`repeated_observation` +0.05, `contradiction` −0.15).
+---
 # 6. Search API
 ## Hybrid Search
 ```
@@ -119,32 +138,34 @@ Returns
 - importance
 ---
 # 7. Version Endpoints
+Versions are nested under their parent Memory Object.
 ## List Versions
 ```
-GET /versions/{memory_id}
+GET /memories/{memory_id}/versions
 ```
 Returns all versions.
 ---
 ## Get Version
 ```
-GET /versions/{memory_id}/{version}
+GET /memories/{memory_id}/versions/{version}
 ```
 Returns a specific version.
 ---
 # 8. Relationship Endpoints
+Relationships are nested under their source Memory Object.
 ## Create Relationship
 ```
-POST /relationships
+POST /memories/{memory_id}/relationships
 ```
 ---
 ## Delete Relationship
 ```
-DELETE /relationships/{relationship_id}
+DELETE /memories/{memory_id}/relationships/{relationship_id}
 ```
 ---
 ## Get Related Memories
 ```
-GET /relationships/{memory_id}
+GET /memories/{memory_id}/relationships
 ```
 Returns connected Memory Objects.
 ---
@@ -171,6 +192,12 @@ Returns
 GET /config
 ```
 Returns safe runtime configuration.
+---
+## System Status
+```
+GET /system/status
+```
+Returns runtime identity and per-store backend selection.
 ---
 # 11. Error Codes
 | Code | Meaning |
