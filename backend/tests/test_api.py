@@ -151,7 +151,7 @@ def test_request_id_generated_when_absent(client):
 
 
 def test_error_envelope_shape(client):
-    response = client.get(f"{API_V1}/memories/does-not-exist")
+    response = client.post(f"{API_V1}/memories", json={"content": ""})
     assert response.status_code == 400
     body = response.json()
     assert set(body) == {"success", "request_id", "timestamp", "duration_ms", "error"}
@@ -166,10 +166,14 @@ def test_error_envelope_shape(client):
 # ----------------------------------------------------------------------
 
 
-def test_missing_memory_is_400_invalid_request(client):
+def test_missing_memory_is_404_not_found(client):
     response = client.get(f"{API_V1}/memories/does-not-exist")
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    assert response.status_code == 404
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "NOT_FOUND"
+    assert body["error"]["message"]
+    assert "details" in body["error"]
 
 
 def test_validation_failure_is_400_invalid_request(client):
@@ -247,9 +251,9 @@ def test_delete(client):
     assert response.status_code == 200
     assert response.json()["data"] == {"memory_id": memory_id, "deleted": True}
 
-    # DELETED is terminal: subsequent reads fail with INVALID_REQUEST (400).
+    # DELETED is terminal: subsequent reads fail with NOT_FOUND (404).
     read = client.get(f"{API_V1}/memories/{memory_id}")
-    assert read.status_code == 400
+    assert read.status_code == 404
 
 
 def test_list_memories_pagination(client):
