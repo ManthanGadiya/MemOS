@@ -3,8 +3,8 @@
 The storage layer is split into three backends with narrow interfaces:
 
 - :class:`MetadataStore` — relational metadata (SQLite in dev, PostgreSQL in prod)
-- :class:`VectorStore` — dense-vector similarity search (Qdrant in prod, in-memory in dev)
-- :class:`GraphStore` — typed relationship graph (Neo4j in prod, in-memory in dev)
+- :class:`VectorStore` — dense-vector similarity search (Qdrant in prod, SQLite/ in-memory in dev)
+- :class:`GraphStore` — typed relationship graph (Neo4j in prod, SQLite/ in-memory in dev)
 
 The Memory Kernel depends only on these protocols; it never touches a
 concrete driver. Adapters are injected via dependency injection.

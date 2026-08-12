@@ -30,15 +30,16 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # ---- storage ---------------------------------------------------------
-    storage_backend: str = "sqlite"  # sqlite | postgres
-    database_path: str = str(Path("memos.db"))  # SQLite file or DSN for postgres
-    # Postgres-compatible: look for MEMOS_DATABASE_DSN overriding path
+    storage_backend: str = "sqlite"  # sqlite (implemented) | postgres (planned)
+    database_path: str = "data/memos_metadata.db"  # SQLite file or DSN for postgres
 
     # ---- vector / embedding ---------------------------------------------
     embedding_dimension: int = 256
     embedding_backend: str = "hash"  # hash (deterministic local) | configured provider
-    vector_store_backend: str = "memory"  # memory | qdrant
-    graph_store_backend: str = "memory"  # memory | neo4j
+    vector_store_backend: str = "sqlite"  # sqlite (persistent) | memory (dev)
+    vector_db_path: str = "data/memos_vectors.db"
+    graph_store_backend: str = "sqlite"  # sqlite (persistent) | memory (dev)
+    graph_db_path: str = "data/memos_graph.db"
 
     # ---- retrieval -------------------------------------------------------
     default_top_k: int = 10

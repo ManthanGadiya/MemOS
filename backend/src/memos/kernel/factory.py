@@ -23,15 +23,50 @@ from memos.kernel.validation import RequestValidator
 from memos.storage.in_memory_graph import InMemoryGraphStore
 from memos.storage.in_memory_vector import InMemoryVectorStore
 from memos.storage.protocols import GraphStore, MetadataStore, VectorStore
+from memos.storage.sqlite_graph import SQLiteGraphStore
 from memos.storage.sqlite_metadata import SQLiteMetadataStore
+from memos.storage.sqlite_vector import SQLiteVectorStore
 
 
 def _resolve_metadata_store(settings: Settings) -> MetadataStore:
-    """Return a metadata store instance per the configured backend."""
+    """Return a metadata store instance per the configured backend.
+
+    Raises a clear, actionable error for backends that are documented but not
+    yet implemented (e.g. ``postgres``) instead of crashing deep in wiring.
+    """
     backend = (settings.storage_backend or "sqlite").lower()
     if backend in {"sqlite", "memory"}:
         return SQLiteMetadataStore(settings.database_path)
-    raise ValueError(f"unsupported storage_backend: {backend!r}")
+    raise ValueError(
+        f"unsupported storage_backend: {backend!r}. "
+        f"Supported metadata backends: sqlite, memory."
+    )
+
+
+def _resolve_vector_store(settings: Settings) -> VectorStore:
+    """Return a vector store instance per the configured backend."""
+    backend = (settings.vector_store_backend or "memory").lower()
+    if backend == "memory":
+        return InMemoryVectorStore()
+    if backend == "sqlite":
+        return SQLiteVectorStore(settings.vector_db_path)
+    raise ValueError(
+        f"unsupported vector_store_backend: {backend!r}. "
+        f"Supported vector backends: memory, sqlite."
+    )
+
+
+def _resolve_graph_store(settings: Settings) -> GraphStore:
+    """Return a graph store instance per the configured backend."""
+    backend = (settings.graph_store_backend or "memory").lower()
+    if backend == "memory":
+        return InMemoryGraphStore()
+    if backend == "sqlite":
+        return SQLiteGraphStore(settings.graph_db_path)
+    raise ValueError(
+        f"unsupported graph_store_backend: {backend!r}. "
+        f"Supported graph backends: memory, sqlite."
+    )
 
 
 def build_kernel(settings: Optional[Settings] = None) -> MemoryKernel:
@@ -53,8 +88,8 @@ def build_kernel(settings: Optional[Settings] = None) -> MemoryKernel:
     embedder = HashEmbedder(dimension=settings.embedding_dimension)
 
     metadata_store: MetadataStore = _resolve_metadata_store(settings)
-    vector_store: VectorStore = InMemoryVectorStore()
-    graph_store: GraphStore = InMemoryGraphStore()
+    vector_store: VectorStore = _resolve_vector_store(settings)
+    graph_store: GraphStore = _resolve_graph_store(settings)
 
     permission_engine = PermissionEngine(settings)
     importance_engine = ImportanceEngine(settings)

@@ -265,16 +265,18 @@ Storage Layer
 
 ### Metadata Storage
 
-- SQLite
-- PostgreSQL
+- SQLite (implemented)
+- PostgreSQL (planned)
 
-### Graph Database
+### Graph Store
 
-- Neo4j
+- SQLite (implemented)
+- Neo4j (planned)
 
-### Vector Database
+### Vector Store
 
-- Qdrant
+- SQLite (implemented)
+- Qdrant (planned)
 
 ### Dashboard
 

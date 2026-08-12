@@ -8,14 +8,18 @@ from .protocols import (
     StorageBackend,
     VectorStore,
 )
+from .sqlite_graph import SQLiteGraphStore
 from .sqlite_metadata import SQLiteMetadataStore
+from .sqlite_vector import SQLiteVectorStore
 
 __all__ = [
     "GraphStore",
     "InMemoryGraphStore",
     "InMemoryVectorStore",
     "MetadataStore",
+    "SQLiteGraphStore",
     "SQLiteMetadataStore",
+    "SQLiteVectorStore",
     "StorageBackend",
     "VectorStore",
     "cosine_similarity",
