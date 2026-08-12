@@ -292,6 +292,63 @@ Storage Layer
 
 ---
 
+# Quick Start
+
+## Prerequisites
+- Python 3.11+
+- Node.js 20+ (for Dashboard)
+- Git
+
+## 1. Clone & Install Backend
+```bash
+git clone https://github.com/ManthanGadiya/MemOS.git
+cd MemOS
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+cd backend
+pip install -e .[api,mcp,dev]
+```
+
+## 2. Run the REST API Server
+```bash
+cd backend
+uvicorn memos.api.app:create_app --factory --port 8000
+```
+Server starts at `http://localhost:8000`. API docs at `http://localhost:8000/docs`.
+
+## 3. Quick API Test
+```bash
+# Create a memory
+curl -X POST http://localhost:8000/api/v1/memories \
+  -H "Content-Type: application/json" \
+  -d '{"content": "The kernel coordinates engines atomically.", "title": "Kernel design"}'
+
+# Hybrid search
+curl -X POST http://localhost:8000/api/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "kernel", "top_k": 5}'
+
+# Health check
+curl http://localhost:8000/api/v1/health
+```
+
+## 4. Run the MCP Server (stdio transport)
+```bash
+cd backend
+python -m memos.mcp
+```
+Connect via any MCP-compatible client (Claude Desktop, Continue, etc.).
+
+## 5. Run the Dashboard
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+Dashboard at `http://localhost:5173` (proxies to backend on :8000).
+
+---
+
 # Repository Structure
 
 ```
