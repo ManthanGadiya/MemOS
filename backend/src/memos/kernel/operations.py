@@ -33,3 +33,4 @@ class KernelOperation(str, Enum):
     GET_RELATIONSHIPS = "get_relationships"
     TRAVERSE = "traverse"
     ROLLBACK = "rollback"
+    ADJUST_CONFIDENCE = "adjust_confidence"

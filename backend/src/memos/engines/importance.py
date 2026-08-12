@@ -359,8 +359,13 @@ def _resolve_retrieval_frequency(memory: MemoryObject) -> int:
     return int(_clamp(count, 0.0, float(RETRIEVAL_FREQUENCY_CAP)))
 
 
+DECAY_CONSTANT: float = 0.0002
+"""Decay coefficient in ``decay_factor = 1 / (1 + 0.0002 * age_hours)``
+per Algorithms.md §10.3.
+"""
+
 def _compute_age_factor(memory: MemoryObject) -> float:
-    """Return ``A``: the normalized age factor.
+    """Return ``A``: the normalized age factor (recency for importance).
 
     Age is measured since the last access (an access "refreshes" the memory
     and triggers importance recalculation per section 3.7), or since
@@ -370,6 +375,26 @@ def _compute_age_factor(memory: MemoryObject) -> float:
     reference = _coerce_aware_utc(reference)
     age_hours = max((now_utc() - reference).total_seconds() / 3600.0, 0.0)
     return 1.0 / (1.0 + IMPORTANCE_RECENCY_DECAY_PER_HOUR * age_hours)
+
+
+def _compute_decay_metadata(memory: MemoryObject, base_importance: float) -> Dict[str, Any]:
+    """Return decay metadata per Algorithms.md §10.2.
+
+    Decay factor: ``1 / (1 + 0.0002 * age_hours)``
+    Current importance: ``base_importance * decay_factor``
+    """
+    reference = memory.last_accessed_at if memory.last_accessed_at is not None else memory.created_at
+    reference = _coerce_aware_utc(reference)
+    age_hours = max((now_utc() - reference).total_seconds() / 3600.0, 0.0)
+    decay_factor = 1.0 / (1.0 + DECAY_CONSTANT * age_hours)
+    current_importance = base_importance * decay_factor
+    return {
+        "last_calculated": now_utc().isoformat(),
+        "base_importance": round(base_importance, 4),
+        "current_importance": round(current_importance, 4),
+        "age_hours": round(age_hours, 4),
+        "decay_factor": round(decay_factor, 6),
+    }
 
 
 def _compute_type_weight(memory: MemoryObject) -> float:
@@ -524,6 +549,8 @@ class ImportanceEngine:
         raw_score = importance / IMPORTANCE_SCORE_MAX
         confidence, confidence_source = _resolve_confidence_source(memory)
 
+        decay_meta = _compute_decay_metadata(memory, importance)
+
         components: Dict[str, Any] = {
             "method": EXPLANATION_METHOD,
             "last_calculated": now_utc().isoformat(),
@@ -535,6 +562,7 @@ class ImportanceEngine:
             "semantic_score": round(semantic.combined, 6),
             "confidence_source": confidence_source,
             "confidence": round(confidence, 6),
+            "decay": decay_meta,
         }
 
         return ImportanceScore(

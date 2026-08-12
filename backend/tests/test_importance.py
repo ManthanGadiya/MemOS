@@ -110,6 +110,7 @@ def test_compute_returns_valid_ranges(engine: ImportanceEngine) -> None:
         "semantic_score",
         "confidence_source",
         "confidence",
+        "decay",
     }
 
 
