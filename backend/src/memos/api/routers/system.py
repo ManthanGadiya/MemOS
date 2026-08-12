@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
 
 from memos.api.dependencies import RequestContext, get_request_context
+from memos.kernel.audit import AuditResult
+from memos.kernel.operations import KernelOperation
 
 
 router = APIRouter(tags=["system"])
@@ -56,6 +60,74 @@ def system_status(ctx: RequestContext = Depends(get_request_context)):
 def dashboard_statistics(ctx: RequestContext = Depends(get_request_context)):
     """Return aggregate system statistics for the dashboard."""
     return ctx.success(ctx.kernel.statistics())
+
+
+@router.get("/dashboard/health")
+def dashboard_health(ctx: RequestContext = Depends(get_request_context)):
+    """Return dashboard-oriented health: liveness plus runtime identity."""
+    settings = ctx.kernel.settings
+    kernel_health = ctx.kernel.health()
+    status = "ok" if all(v == "ok" for v in kernel_health.values()) else "degraded"
+    return ctx.success(
+        {
+            "status": status,
+            "app": settings.app_name,
+            "version": settings.version,
+            "storage_backend": settings.storage_backend,
+            "embedding_backend": settings.embedding_backend,
+            **kernel_health,
+        }
+    )
+
+
+@router.get("/dashboard/logs")
+def dashboard_logs(
+    ctx: RequestContext = Depends(get_request_context),
+    operation: Optional[str] = Query(default=None, description="KernelOperation value"),
+    result: Optional[str] = Query(default=None, description="AuditResult value"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    """Return recent audit records for the dashboard.
+
+    The audit log is the dashboard's ``Logs`` module data source (API.md
+    section 9). Filters are validated against the canonical enums so unknown
+    values produce ``INVALID_REQUEST`` instead of reaching the kernel.
+    """
+    kernel_operation: Optional[KernelOperation] = None
+    if operation is not None:
+        try:
+            kernel_operation = KernelOperation(operation)
+        except ValueError:
+            valid = ", ".join(op.value for op in KernelOperation)
+            return ctx.error(
+                "INVALID_REQUEST",
+                f"unknown operation '{operation}'; valid values: {valid}",
+            )
+
+    audit_result: Optional[AuditResult] = None
+    if result is not None:
+        try:
+            audit_result = AuditResult(result)
+        except ValueError:
+            valid = ", ".join(res.value for res in AuditResult)
+            return ctx.error(
+                "INVALID_REQUEST",
+                f"unknown result '{result}'; valid values: {valid}",
+            )
+
+    records = ctx.kernel.list_audit(
+        operation=kernel_operation,
+        result=audit_result,
+        limit=limit,
+        offset=offset,
+    )
+    return ctx.success(
+        {
+            "records": [record.to_dict() for record in records],
+            "total": ctx.kernel.statistics()["audit_count"],
+        }
+    )
 
 
 @router.get("/config")

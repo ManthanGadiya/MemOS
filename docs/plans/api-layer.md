@@ -1,6 +1,6 @@
 # REST API Layer — Implementation Plan
 
-Status: reviewed, approved for implementation (2026-08-10)
+Status: implemented (2026-08-11) — kernel taxonomy extended (NOT_FOUND, STORAGE_FAILURE); all 209 tests pass
 
 ## 1. Goal
 
@@ -81,26 +81,16 @@ may do everything).
 
 ## 5. Error mapping
 
-Kernel emits exactly three codes (Security.md §10). The REST API maps 1:1 per
-SystemArchitecture.md (HTTP: 400/403/404/409/428/500). Since the kernel
-currently flattens `NotFoundError` to `INVALID_REQUEST` (400) and the docs list
-404-NOT_FOUND as a real code, the API layer enriches the mapping by inspecting
-the *original* exception where available:
+Kernel emits five codes (Security.md §10). The REST API maps 1:1 per
+SystemArchitecture.md (HTTP: 400/403/404/503/500):
 
 | KernelError code | HTTP |
 | --- | --- |
 | PERMISSION_DENIED | 403 |
 | INVALID_REQUEST | 400 |
+| NOT_FOUND | 404 |
+| STORAGE_FAILURE | 503 |
 | INTERNAL_ERROR | 500 |
-
-Design decision (flagged in handoff, not silently changed): the kernel maps
-`NotFoundError -> INVALID_REQUEST` (400). To honor SRS §13.7 (404-NOT_FOUND),
-the API inspects the underlying exception: FastAPI handlers catch `KernelError`
-and check `isinstance(original, NotFoundError)` is not available (kernel already
-converted it) — so in V1 the API returns 400 INVALID_REQUEST for missing
-memories, matching kernel behavior. A follow-up kernel change (preserve source
-code in `KernelError.details`) can upgrade to 404 without API changes. The API
-mapping table lives in one function so that upgrade is a one-line change.
 
 Pydantic `RequestValidationError` -> 400 INVALID_REQUEST with field details.
 Unhandled exceptions -> 500 INTERNAL_ERROR, no internal detail leak.
@@ -128,5 +118,6 @@ Unhandled exceptions -> 500 INTERNAL_ERROR, no internal detail leak.
    - health/status/statistics/config,
    - envelope shape (success + error), request_id echo, duration present,
    - permission denial -> 403 PERMISSION_DENIED; bad payload -> 400;
-     missing memory -> 400 INVALID_REQUEST and no leak for internal errors.
+     missing memory -> 404 NOT_FOUND; storage failure -> 503 STORAGE_FAILURE;
+     internal error -> 500 INTERNAL_ERROR; no leak.
 7. Full suite green; docs (API.md) and README Current Status updated; commit.

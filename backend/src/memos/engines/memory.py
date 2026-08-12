@@ -262,6 +262,13 @@ class MemoryEngine:
 
         content_changed = content is not None and content != current.content
 
+        # Extract confidence from metadata if provided, preserving the field
+        confidence_from_metadata = None
+        if metadata is not None:
+            raw_confidence = metadata.get("confidence")
+            if isinstance(raw_confidence, (int, float)):
+                confidence_from_metadata = float(raw_confidence)
+
         updated = replace(
             current,
             content=content if content is not None else current.content,
@@ -282,6 +289,7 @@ class MemoryEngine:
             type=memory_type if memory_type is not None else current.type,
             version=current.version + 1,
             updated_at=now_utc(),
+            confidence=confidence_from_metadata if confidence_from_metadata is not None else current.confidence,
         )
         if content_changed:
             updated.embedding = self._embed(updated.content)

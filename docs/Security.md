@@ -145,6 +145,8 @@ Examples
 |--------|---------|
 | PERMISSION_DENIED | Unauthorized operation |
 | INVALID_REQUEST | Invalid input |
+| NOT_FOUND | Requested resource does not exist |
+| STORAGE_FAILURE | Storage subsystem unavailable |
 | INTERNAL_ERROR | Unexpected failure |
 Sensitive internal details shall never be exposed to clients.
 ---

@@ -543,6 +543,70 @@ class MemoryKernel:
         )
 
     @_structured_errors
+    def adjust_confidence(
+        self,
+        memory_id: str,
+        adjustment: str,
+        principal_id: str = SYSTEM_PRINCIPAL,
+        request_id: Optional[str] = None,
+    ) -> MemoryObject:
+        """Adjust memory confidence per Algorithms.md §4.4.
+
+        Args:
+            memory_id: The memory to adjust.
+            adjustment: Either "repeated_observation" (increase) or "contradiction" (decrease).
+            principal_id: Acting principal.
+            request_id: Optional request ID.
+
+        Returns:
+            Updated MemoryObject with new confidence.
+
+        Raises:
+            KernelError: INVALID_REQUEST if adjustment is unknown, NOT_FOUND if memory missing.
+        """
+        request_id = request_id or self._new_request_id()
+        self._validator.validate_principal(principal_id)
+        memory_id = self._validator.validate_memory_id(memory_id)
+
+        if adjustment not in ("repeated_observation", "contradiction"):
+            raise KernelError(
+                KernelErrorCode.INVALID_REQUEST,
+                f"unknown adjustment '{adjustment}'; expected 'repeated_observation' or 'contradiction'",
+                {"request_id": request_id},
+            )
+
+        self._require_modify_target(
+            memory_id, principal_id, operation=KernelOperation.TOUCH, request_id=request_id
+        )
+
+        def _adjust_fn(transaction: Transaction) -> MemoryObject:
+            memory = self._memory_engine.get(memory_id, principal_id=principal_id)
+            current_confidence = memory.confidence
+            if adjustment == "repeated_observation":
+                new_confidence = min(current_confidence + 0.05, 1.0)
+            else:  # contradiction
+                new_confidence = max(current_confidence - 0.15, 0.0)
+
+            # Merge with existing metadata so we don't lose other fields
+            merged_metadata = dict(memory.metadata)
+            merged_metadata["confidence"] = new_confidence
+
+            updated = self._memory_engine.update(
+                memory_id,
+                principal_id,
+                metadata=merged_metadata,
+            )
+            return updated
+
+        return self._write(
+            KernelOperation.TOUCH,
+            request_id,
+            principal_id,
+            memory_id,
+            _adjust_fn,
+        )
+
+    @_structured_errors
     def touch(
         self,
         memory_id: str,
@@ -607,18 +671,31 @@ class MemoryKernel:
                 f"invalid relationship type: {relationship_type!r}",
                 {"request_id": request_id},
             )
-        return self._write(
-            KernelOperation.ADD_RELATIONSHIP,
-            request_id,
-            principal_id,
-            source_id,
-            lambda txn: self._graph_engine.add_relationship(
+        def _sync_relationship_counts(transaction: Transaction, memory_ids: list[str]) -> None:
+            for mid in memory_ids:
+                memory = self._metadata_store.get(mid)
+                if memory is not None:
+                    relationships = self._graph_engine.get_relationships(memory_id=mid, direction="any")
+                    memory.metadata["relationship_count"] = len(relationships)
+                    self._metadata_store.update(memory)
+
+        def _add_fn(transaction: Transaction) -> Relationship:
+            result = self._graph_engine.add_relationship(
                 source_id=source_id,
                 target_id=target_id,
                 relationship_type=relationship_type,
                 weight=weight,
                 metadata=metadata,
-            ),
+            )
+            _sync_relationship_counts(transaction, [source_id, target_id])
+            return result
+
+        return self._write(
+            KernelOperation.ADD_RELATIONSHIP,
+            request_id,
+            principal_id,
+            source_id,
+            _add_fn,
         )
 
     @_structured_errors
@@ -637,6 +714,15 @@ class MemoryKernel:
                 {"request_id": request_id},
             )
         before = self._find_relationship(relationship_id)
+        affected_ids = [before.source_id, before.target_id] if before is not None else []
+
+        def _sync_counts(transaction: Transaction) -> None:
+            for mid in affected_ids:
+                memory = self._metadata_store.get(mid)
+                if memory is not None:
+                    relationships = self._graph_engine.get_relationships(memory_id=mid, direction="any")
+                    memory.metadata["relationship_count"] = len(relationships)
+                    self._metadata_store.update(memory)
 
         def _remove_fn(transaction: Transaction) -> None:
             if before is not None:
@@ -645,6 +731,7 @@ class MemoryKernel:
                     lambda: self._graph_store.upsert_relationship(before),
                 )
             self._graph_engine.remove_relationship(relationship_id)
+            _sync_counts(transaction)
 
         return self._write(
             KernelOperation.REMOVE_RELATIONSHIP,

@@ -299,7 +299,7 @@ class TestDelete:
 
         with pytest.raises(KernelError) as exc:
             kernel.get(first.memory_id, principal_id="alice")
-        assert exc.value.code is KernelErrorCode.INVALID_REQUEST  # NotFound
+        assert exc.value.code is KernelErrorCode.NOT_FOUND
         assert kernel.get_relationships(memory_id=first.memory_id) == []
         hits = kernel.search("first memory", top_k=5, principal_id="alice")
         assert all(hit.memory.memory_id != first.memory_id for hit in hits)
@@ -328,15 +328,15 @@ class TestTransactions:
 
         with pytest.raises(KernelError) as exc:
             kernel.create("alpha", owner_id="alice")
-        assert exc.value.code is KernelErrorCode.INTERNAL_ERROR
+        assert exc.value.code is KernelErrorCode.STORAGE_FAILURE
 
         # Metadata, graph, and version were all rolled back (no partial memory).
         assert kernel.list_memories(principal_id=SYSTEM_PRINCIPAL) == []
         assert collected == []  # no event for a rolled-back operation
         rollbacks = kernel.list_audit(result=AuditResult.ROLLBACK)
         assert len(rollbacks) == 1
-        # The audit records the originating MemOS code (not the client-visible
-        # INTERNAL_ERROR mapping); an untyped crash records INTERNAL_ERROR.
+        # The audit records the originating MemOS code; storage failures now
+        # map to STORAGE_FAILURE at the kernel boundary.
         assert rollbacks[0].details.get("error_code") == "storage_error"
         kernel.close()
 
@@ -348,7 +348,7 @@ class TestTransactions:
         memory = make_memory(kernel, content="alpha")
         with pytest.raises(KernelError) as exc:
             kernel.update(memory.memory_id, content="beta", principal_id="alice")
-        assert exc.value.code is KernelErrorCode.INTERNAL_ERROR
+        assert exc.value.code is KernelErrorCode.STORAGE_FAILURE
 
         # The metadata before-image is restored, not left at the failed write.
         got = kernel.get(memory.memory_id, principal_id="alice")
@@ -402,7 +402,7 @@ class TestReadPermissions:
         kernel.delete(memory.memory_id, principal_id="alice")
         with pytest.raises(KernelError) as exc:
             kernel.get(memory.memory_id, principal_id="alice")
-        assert exc.value.code is KernelErrorCode.INVALID_REQUEST
+        assert exc.value.code is KernelErrorCode.NOT_FOUND
 
 
 # ----------------------------------------------------------------------

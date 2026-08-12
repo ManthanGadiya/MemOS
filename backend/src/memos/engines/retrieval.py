@@ -165,6 +165,7 @@ class RetrievalEngine:
         tags: list[str] | None = None,
         principal_id: str = SYSTEM_PRINCIPAL,
         graph_expansion: bool = False,
+        metadata_only: bool = False,
     ) -> List[ScoredMemory]:
         """Core retrieval: fuse vector similarity and metadata keywords.
 
@@ -188,6 +189,11 @@ class RetrievalEngine:
         candidates have no graph distance and fall back to the degree-based
         saturation signal.
 
+        When ``metadata_only`` is True, semantic similarity is omitted and
+        the remaining weights are renormalized to sum to 1.0 (Algorithms.md
+        section 6.4). This is useful for pure metadata/tag queries where no
+        natural language embedding is available.
+
         When ``state`` is ``None`` the documented default ``ACTIVE`` applies,
         so ARCHIVED memories are excluded; DELETED memories are never
         returned (LC-004). See module docstring.
@@ -205,20 +211,21 @@ class RetrievalEngine:
         # graph expansion, None = no graph distance (degree fallback).
         graph_distances: Dict[str, int | None] = {}
 
-        query_vector = self._embedder.embed(query)
-        for memory_id, raw_similarity in self._vector_store.search(
-            query_vector, top_k=pool_size
-        ):
-            memory = self._metadata_store.get(memory_id)
-            if memory is None:
-                continue
-            self._merge_candidate(
-                candidates,
-                graph_distances,
-                memory,
-                self._clamp_similarity(raw_similarity),
-                0,
-            )
+        if not metadata_only:
+            query_vector = self._embedder.embed(query)
+            for memory_id, raw_similarity in self._vector_store.search(
+                query_vector, top_k=pool_size
+            ):
+                memory = self._metadata_store.get(memory_id)
+                if memory is None:
+                    continue
+                self._merge_candidate(
+                    candidates,
+                    graph_distances,
+                    memory,
+                    self._clamp_similarity(raw_similarity),
+                    0,
+                )
 
         for memory in self._metadata_store.search_metadata(query, limit=pool_size):
             self._merge_candidate(candidates, graph_distances, memory, 0.0, None)
@@ -246,7 +253,7 @@ class RetrievalEngine:
 
         scored = [
             self._score_candidate(
-                memory, similarity, graph_distances[memory.memory_id]
+                memory, similarity, graph_distances[memory.memory_id], metadata_only
             )
             for memory, similarity in filtered
         ]
@@ -455,6 +462,7 @@ class RetrievalEngine:
         memory: MemoryObject,
         similarity: float,
         graph_distance: int | None = None,
+        metadata_only: bool = False,
     ) -> ScoredMemory:
         """Fuse the documented hybrid ranking formula for one candidate.
 
@@ -462,6 +470,10 @@ class RetrievalEngine:
         direct semantic match, ``>= 1`` for a graph-expansion candidate. When
         it is ``None`` (metadata-only candidate with no graph distance) the
         degree-based saturation signal is used as a fallback.
+
+        When ``metadata_only`` is True, semantic similarity is omitted and
+        the remaining weights are renormalized to sum to 1.0 (Algorithms.md
+        section 6.4).
         """
         if graph_distance is not None:
             graph_connectivity = 1.0 / (1.0 + graph_distance)
@@ -470,12 +482,29 @@ class RetrievalEngine:
         importance, recency, graph_connectivity = self._components(
             memory, graph_connectivity
         )
+
+        alpha = self._settings.rank_alpha
+        beta = self._settings.rank_beta
+        gamma = self._settings.rank_gamma
+        delta = self._settings.rank_delta
+        epsilon = self._settings.rank_epsilon
+
+        if metadata_only:
+            # Renormalize over remaining signals (section 6.4).
+            total = beta + gamma + delta + epsilon
+            if total > 0:
+                alpha = 0.0
+                beta = beta / total
+                gamma = gamma / total
+                delta = delta / total
+                epsilon = epsilon / total
+
         final_score = (
-            self._settings.rank_alpha * similarity
-            + self._settings.rank_beta * importance
-            + self._settings.rank_gamma * memory.confidence
-            + self._settings.rank_delta * recency
-            + self._settings.rank_epsilon * graph_connectivity
+            alpha * similarity
+            + beta * importance
+            + gamma * memory.confidence
+            + delta * recency
+            + epsilon * graph_connectivity
         )
         return ScoredMemory(
             memory=memory,

@@ -5,6 +5,8 @@ to clients:
 
 - ``PERMISSION_DENIED`` — unauthorized operation
 - ``INVALID_REQUEST`` — invalid input
+- ``NOT_FOUND`` — requested resource does not exist
+- ``STORAGE_FAILURE`` — storage subsystem unavailable
 - ``INTERNAL_ERROR`` — unexpected failure
 
 Sensitive internal details must never be exposed to clients, so any un-mapped
@@ -32,10 +34,12 @@ from memos.domain.exceptions import (
 
 
 class KernelErrorCode(str, Enum):
-    """The three structured error codes a kernel caller may receive."""
+    """The five structured error codes a kernel caller may receive."""
 
     PERMISSION_DENIED = "PERMISSION_DENIED"
     INVALID_REQUEST = "INVALID_REQUEST"
+    NOT_FOUND = "NOT_FOUND"
+    STORAGE_FAILURE = "STORAGE_FAILURE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -82,6 +86,14 @@ class KernelError(Exception):
         return cls(KernelErrorCode.INVALID_REQUEST, message, {"request_id": request_id})
 
     @classmethod
+    def not_found(cls, message: str, request_id: Optional[str] = None) -> "KernelError":
+        return cls(KernelErrorCode.NOT_FOUND, message, {"request_id": request_id})
+
+    @classmethod
+    def storage_failure(cls, message: str, request_id: Optional[str] = None) -> "KernelError":
+        return cls(KernelErrorCode.STORAGE_FAILURE, message, {"request_id": request_id})
+
+    @classmethod
     def internal(cls, request_id: Optional[str] = None) -> "KernelError":
         return cls(
             KernelErrorCode.INTERNAL_ERROR,
@@ -92,11 +104,11 @@ class KernelError(Exception):
 
 _KNOWN_TO_CODE: dict[type[MemOSError], KernelErrorCode] = {
     ValidationError: KernelErrorCode.INVALID_REQUEST,
-    NotFoundError: KernelErrorCode.INVALID_REQUEST,
+    NotFoundError: KernelErrorCode.NOT_FOUND,
     LifecycleTransitionError: KernelErrorCode.INVALID_REQUEST,
     ImmutabilityError: KernelErrorCode.INVALID_REQUEST,
     PermissionDeniedError: KernelErrorCode.PERMISSION_DENIED,
-    StorageError: KernelErrorCode.INTERNAL_ERROR,
+    StorageError: KernelErrorCode.STORAGE_FAILURE,
     TransactionError: KernelErrorCode.INTERNAL_ERROR,
     EmbeddingError: KernelErrorCode.INTERNAL_ERROR,
     ConfigurationError: KernelErrorCode.INTERNAL_ERROR,

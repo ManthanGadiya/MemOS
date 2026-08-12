@@ -120,3 +120,20 @@ def list_memories(
         [MemoryOut.from_object(m).model_dump(mode="json") for m in memories],
         metadata={"limit": limit, "offset": offset},
     )
+
+
+@router.post("/{memory_id}/confidence")
+def adjust_confidence(
+    memory_id: str,
+    adjustment: str = Query(..., pattern="^(repeated_observation|contradiction)$"),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Adjust memory confidence (Algorithms.md §4.4).
+
+    - `repeated_observation`: increase by 0.05 (capped at 1.0)
+    - `contradiction`: decrease by 0.15 (floored at 0.0)
+    """
+    memory = ctx.kernel.adjust_confidence(
+        memory_id, adjustment, principal_id=ctx.principal_id
+    )
+    return ctx.success(MemoryOut.from_object(memory).model_dump(mode="json"))

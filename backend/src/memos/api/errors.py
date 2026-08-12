@@ -2,9 +2,9 @@
 
 Kernel errors map 1:1 to HTTP status codes (SystemArchitecture.md REST API
 chapter): ``PERMISSION_DENIED`` -> 403, ``INVALID_REQUEST`` -> 400,
-``INTERNAL_ERROR`` -> 500. Pydantic validation failures and unhandled
-exceptions normalize to the documented JSON envelope without leaking internal
-details.
+``NOT_FOUND`` -> 404, ``STORAGE_FAILURE`` -> 503, ``INTERNAL_ERROR`` -> 500.
+Pydantic validation failures and unhandled exceptions normalize to the
+documented JSON envelope without leaking internal details.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ from memos.kernel.errors import KernelError, KernelErrorCode
 _KERNEL_ERROR_TO_HTTP: Dict[KernelErrorCode, int] = {
     KernelErrorCode.PERMISSION_DENIED: 403,
     KernelErrorCode.INVALID_REQUEST: 400,
+    KernelErrorCode.NOT_FOUND: 404,
+    KernelErrorCode.STORAGE_FAILURE: 503,
     KernelErrorCode.INTERNAL_ERROR: 500,
 }
 
