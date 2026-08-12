@@ -376,11 +376,11 @@ In Progress
 
 Upcoming
 
-- REST API
-- MCP Server
-- Dashboard
-- Testing
-- Docker Deployment
+- ✅ REST API
+- ✅ MCP Server
+- ⏳ Dashboard
+- ⏳ Testing
+- ⏳ Docker Deployment
 
 ---
 
