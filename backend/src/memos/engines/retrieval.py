@@ -219,12 +219,16 @@ class RetrievalEngine:
                 memory = self._metadata_store.get(memory_id)
                 if memory is None:
                     continue
+                similarity = self._clamp_similarity(raw_similarity)
+                # Only direct semantic matches (high similarity) get graph_distance=0.
+                # Distractors with similarity ~0 should use degree fallback, not direct match.
+                graph_distance = 0 if similarity > 0.5 else None
                 self._merge_candidate(
                     candidates,
                     graph_distances,
                     memory,
-                    self._clamp_similarity(raw_similarity),
-                    0,
+                    similarity,
+                    graph_distance,
                 )
 
         for memory in self._metadata_store.search_metadata(query, limit=pool_size):

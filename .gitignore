@@ -38,6 +38,7 @@ logs/
 # SQLite runtime artifacts
 *.db
 
-# Node / dashboard
-node_modules/
-dashboard/dist/*.tsbuildinfo
+# Benchmark artifacts
+backend/manifest.json
+backend/report.json
+backend/retrieval_metrics.csv
