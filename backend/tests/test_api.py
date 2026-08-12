@@ -384,3 +384,101 @@ def test_config_exposes_only_safe_keys(client):
     assert "app_name" in data
     assert "storage_backend" in data
     assert "database_path" not in data
+
+
+def test_dashboard_health(client):
+    response = client.get(f"{API_V1}/dashboard/health")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "ok"
+    assert data["app"] == "MemOS"
+    assert data["version"] != ""
+    assert data["kernel"] == "ok"
+    assert data["metadata_store"] == "ok"
+
+
+def test_dashboard_logs_returns_audit_records(client):
+    create_memory(client, "log me")
+    data = client.get(f"{API_V1}/dashboard/logs").json()["data"]
+    assert data["total"] >= 1
+    records = data["records"]
+    assert any(
+        record["operation"] == "create" and record["result"] == "SUCCESS"
+        for record in records
+    )
+    # Every audit record is JSON-safe with the documented fields.
+    first = records[0]
+    assert set(first) >= {
+        "timestamp",
+        "request_id",
+        "memory_id",
+        "operation",
+        "principal_id",
+        "result",
+        "operation_type",
+    }
+
+
+def test_dashboard_logs_filters(client):
+    memory_id = create_memory(client, "filter me")
+    # A foreign principal is denied (private memory), producing a DENIED record.
+    denied_archive = client.put(
+        f"{API_V1}/memories/{memory_id}/archive", headers={"X-Principal-ID": "dash-user"}
+    )
+    assert denied_archive.json()["success"] is False
+
+    # The owner (system) can archive, producing a SUCCESS record.
+    client.put(f"{API_V1}/memories/{memory_id}/archive")
+
+    creates = client.get(
+        f"{API_V1}/dashboard/logs", params={"operation": "create"}
+    ).json()["data"]["records"]
+    assert creates and all(record["operation"] == "create" for record in creates)
+
+    archived = client.get(
+        f"{API_V1}/dashboard/logs", params={"operation": "archive"}
+    ).json()["data"]["records"]
+    assert archived and all(record["operation"] == "archive" for record in archived)
+    assert any(
+        record["result"] == "SUCCESS" and record["memory_id"] == memory_id
+        for record in archived
+    )
+
+    denied = client.get(
+        f"{API_V1}/dashboard/logs", params={"result": "DENIED"}
+    ).json()["data"]["records"]
+    assert denied and all(record["result"] == "DENIED" for record in denied)
+
+
+def test_dashboard_logs_pagination(client):
+    for index in range(5):
+        create_memory(client, f"page {index}")
+    first_page = client.get(
+        f"{API_V1}/dashboard/logs", params={"limit": 2, "offset": 0}
+    ).json()["data"]
+    second_page = client.get(
+        f"{API_V1}/dashboard/logs", params={"limit": 2, "offset": 2}
+    ).json()["data"]
+    assert len(first_page["records"]) == 2
+    assert len(second_page["records"]) == 2
+    assert first_page["records"][0]["timestamp"] != second_page["records"][0]["timestamp"]
+
+
+def test_dashboard_logs_invalid_filters(client):
+    bad_operation = client.get(
+        f"{API_V1}/dashboard/logs", params={"operation": "not-an-op"}
+    ).json()
+    assert bad_operation["success"] is False
+    assert bad_operation["error"]["code"] == "INVALID_REQUEST"
+
+    bad_result = client.get(
+        f"{API_V1}/dashboard/logs", params={"result": "MAYBE"}
+    ).json()
+    assert bad_result["success"] is False
+    assert bad_result["error"]["code"] == "INVALID_REQUEST"
+
+    too_many = client.get(
+        f"{API_V1}/dashboard/logs", params={"limit": 5000}
+    ).json()
+    assert too_many["success"] is False
+    assert too_many["error"]["code"] == "INVALID_REQUEST"

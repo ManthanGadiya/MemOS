@@ -34,3 +34,10 @@ Thumbs.db
 *.log
 data/
 logs/
+
+# SQLite runtime artifacts
+*.db
+
+# Node / dashboard
+node_modules/
+dashboard/dist/*.tsbuildinfo
