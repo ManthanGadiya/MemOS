@@ -1,0 +1,6 @@
+.vite/
+node_modules/
+dist/
+.git/
+backend/
+docs/

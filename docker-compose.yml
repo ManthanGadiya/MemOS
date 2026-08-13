@@ -1,0 +1,51 @@
+# MemOS — Docker Compose deployment (docs/SystemArchitecture.md section 31).
+#
+# Services: dashboard -> REST API -> Memory Kernel -> SQLite stores.
+# The SQLite data files persist in the named `memos-data` volume.
+#
+# Usage:
+#   docker compose up --build
+#   Open http://localhost:5173  (dashboard)
+#   Open http://localhost:8000/docs  (REST API)
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: memos-backend
+    container_name: memos-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - memos-data:/data
+    environment:
+      MEMOS_STORAGE_BACKEND: sqlite
+      MEMOS_VECTOR_STORE_BACKEND: sqlite
+      MEMOS_GRAPH_STORE_BACKEND: sqlite
+      MEMOS_DATABASE_PATH: /data/memos_metadata.db
+      MEMOS_VECTOR_DB_PATH: /data/memos_vectors.db
+      MEMOS_GRAPH_DB_PATH: /data/memos_graph.db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    image: memos-dashboard
+    container_name: memos-dashboard
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+    environment:
+      MEMOS_API_TARGET: http://backend:8000
+
+volumes:
+  memos-data:

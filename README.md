@@ -431,11 +431,11 @@ Completed
 - ✅ Research
 - ✅ Backend Development
 - ✅ Memory Kernel
+- ✅ Docker Deployment
 
 In Progress
 
 - Testing
-- Docker Deployment
 
 Upcoming
 

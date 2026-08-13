@@ -1316,6 +1316,11 @@ Graph DB
 Vector DB
 ```
 Docker Compose is the recommended production deployment for Version 1.
+Two services are defined in ``docker-compose.yml``:
+- ``backend``: FastAPI REST API + Memory Kernel over persistent SQLite stores. Exposes port ``8000``. SQLite files live in the named ``memos-data`` volume under ``/data``.
+- ``dashboard``: production React build served by nginx. Exposes port ``5173`` and proxies ``/api`` to the ``backend`` service.
+
+Both services run from multi-stage Dockerfiles (``backend/Dockerfile``, ``dashboard/Dockerfile``) and are started with ``docker compose up --build``. The backend container runs a health check against ``/api/v1/health``; the dashboard waits for it before starting. SQLite data persists across container restarts in the ``memos-data`` volume.
 ---
 # 32. Architectural Quality Attributes
 The architecture has been designed to maximize the following qualities.
